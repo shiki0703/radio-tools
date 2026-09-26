@@ -1,0 +1,16 @@
+# 自動で作られるもの(配らない)
+runtime/
+
+# 作業中のもの
+data/
+results/
+uploads/
+proxy/
+*.log
+__pycache__/
+*.pyc
+hub_config.json
+hub_instance.json
+instance.json
+settings.json
+launcher/collect_sources.json

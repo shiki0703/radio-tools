@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Radio Sync</title>
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<div id="banner" class="banner" hidden></div>
+<header class="top">
+  <div class="brand"><span class="logo"></span>Radio Sync<span class="ver">0.3 試作版</span></div>
+  <div class="doc"><span id="docName"></span><span id="saveState" class="muted"></span></div>
+  <div class="actions">
+    <button id="btnUndo" class="ghost" title="元に戻す (Ctrl+Z)">↶ 元に戻す</button>
+    <button id="btnRedo" class="ghost icon" title="やり直す (Ctrl+Y)">↷</button>
+    <span class="sep"></span>
+    <button id="btnMenu" class="ghost" title="メニュー">⋯</button>
+    <button id="btnPhone" class="ghost" title="同じ Wi-Fi のスマホからつなぐ">スマホ</button>
+    <span class="sep"></span>
+    <button id="btnNew" class="ghost">新規</button>
+    <button id="btnOpen" class="ghost">開く</button>
+    <button id="btnSaveAs" class="ghost">別名で保存</button>
+    <button id="btnSave" class="primary">保存</button>
+  </div>
+</header>
+<nav class="steps" id="steps">
+  <button data-step="files" data-full="素材を選ぶ" data-short="素材"><b>1</b><span class="lbl">素材を選ぶ</span></button>
+  <button data-step="analyze" data-full="自動照合" data-short="照合"><b>2</b><span class="lbl">自動照合</span></button>
+  <button data-step="review" data-full="確認・調整" data-short="確認"><b>3</b><span class="lbl">確認・調整</span></button>
+  <button data-step="cut" data-full="カット" data-short="カット"><b>4</b><span class="lbl">カット</span></button>
+  <button data-step="export" data-full="書き出し" data-short="書き出し"><b>5</b><span class="lbl">書き出し</span></button>
+</nav>
+<main>
+  <section id="view-files" class="view"></section>
+  <section id="view-analyze" class="view"></section>
+  <section id="view-review" class="view review">
+    <aside class="episodes" id="episodeList"></aside>
+    <div class="work">
+      <div class="rbar" id="reviewBar"></div>
+      <div class="card tl-card">
+        <div class="tl-label"><span>話全体</span><span id="tlTotal"></span></div>
+        <div class="timeline" id="overview"></div>
+        <div class="tl-label"><span id="detailRange"></span><span class="zoom" id="detailZoom">拡大 <button data-span="20">前後10秒</button><button data-span="120">前後1分</button><button data-span="600">前後5分</button></span></div>
+        <div class="timeline detail" id="detail"></div>
+      </div>
+      <div class="stage">
+        <div class="card player">
+          <div class="screen" id="screen">
+            <video id="cam" playsinline disablepictureinpicture preload="auto" muted></video>
+            <img id="stillImg" alt="" hidden>
+            <div class="placeholder" id="placeholder" hidden></div>
+            <div class="badge-src" id="srcBadge"></div>
+            <div class="overlay" id="overlay"></div>
+          </div>
+          <div id="reviewBarSlot"></div>
+          <div id="phoneReview" class="phonebar" hidden></div>
+          <div class="transport">
+            <button id="btnSegStart" class="icon" title="区間の先頭へ (Home)">◀◀</button>
+            <button id="btnBack" class="icon" title="2秒戻る">−2秒</button>
+            <button id="btnPlay" class="primary icon" title="再生 / 一時停止 (Space)">▶ 再生</button>
+            <span class="clock" id="clock">0:00.000</span>
+            <button id="btnCapture" title="いま映っているカメラの場面を、静止画の候補として保存します">この場面を静止画候補に</button>
+            <label class="check" title="ラジオとカメラの音を同時に流します。ずれていると声が二重に聞こえます"><input type="checkbox" id="chkCamAudio">カメラの音も重ねる</label>
+          </div>
+          <div class="sample-bar" id="sampleBar" hidden>
+            <span class="sample-text" id="sampleText"></span>
+            <button id="btnSamplePrev" class="icon" title="前の確認箇所">◀</button>
+            <button id="btnSampleNext" class="icon" title="次の確認箇所">▶</button>
+            <button id="btnSampleStop">終了</button>
+          </div>
+          <div class="wave-panel">
+            <div class="wave-top">
+              <span class="lg radio">ラジオ</span><span class="lg cam">カメラ</span>
+              <span class="wave-target" id="waveTarget"></span>
+              <span class="zoom" id="waveZoom"><button data-span="6">±3秒</button><button data-span="20">±10秒</button><button data-span="60">±30秒</button></span>
+            </div>
+            <canvas id="wave" title="カメラの波形を左右にドラッグしてずれを合わせます。クリックでその位置へ移動"></canvas>
+            <div class="slider-row">
+              <span class="end">◀ 映像を早める</span>
+              <input type="range" id="offsetSlider" min="-30" max="30" step="1" value="0" aria-label="映像のずれ調整(±30コマ)">
+              <span class="end">映像を遅らせる ▶</span>
+            </div>
+            <div class="wave-foot"><span id="offsetLabel" class="mono"></span><span class="muted">上下の山がそろう所に、カメラの波形をドラッグ(またはスライダー)</span></div>
+          </div>
+          <div class="help">
+            <kbd>Space</kbd>再生/停止　<kbd>←</kbd><kbd>→</kbd>1コマ　<kbd>Shift</kbd>+<kbd>←</kbd><kbd>→</kbd>10コマ　<kbd>Enter</kbd>OKして次へ　<kbd>N</kbd>/<kbd>P</kbd>次/前の要確認　<kbd>Ctrl</kbd>+<kbd>Z</kbd>元に戻す
+          </div>
+          <audio id="radio" preload="auto"></audio>
+        </div>
+        <div class="card side">
+          <div class="tabs" id="sideTabs">
+            <button data-tab="cuts">カット一覧</button>
+            <button data-tab="segment">区間の細かい調整</button>
+          </div>
+          <div id="cutPanel" class="cutpanel"></div>
+          <div id="inspector" class="inspector"></div>
+        </div>
+      </div>
+    </div>
+  </section>
+  <section id="view-cut" class="view"></section>
+  <section id="view-export" class="view"></section>
+</main>
+<div id="toasts"></div>
+<div id="modal" hidden></div>
+<script src="app.js"></script>
+</body>
+</html>

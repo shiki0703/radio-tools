@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>動画クリッパー</title>
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<div id="banner" class="banner" hidden></div>
+<header class="top">
+  <div class="brand"><span class="logo clipper"></span>動画クリッパー<span class="ver">v7</span></div>
+  <div class="doc"><span id="docName"></span><span id="docState" class="muted"></span></div>
+  <div class="actions">
+    <button id="btnPhone" class="ghost" title="同じ Wi-Fi のスマホからつなぐ">スマホ</button>
+    <button id="btnResults" class="ghost" title="処理結果が入っている results フォルダを開きます">結果フォルダ</button>
+    <button id="btnNew" class="primary">新しい動画を処理</button>
+  </div>
+</header>
+<nav class="steps" id="steps">
+  <button data-step="video"><b>1</b>動画を選ぶ</button>
+  <button data-step="settings"><b>2</b>処理の設定</button>
+  <button data-step="run"><b>3</b>処理</button>
+  <button data-step="review"><b>4</b>確認・修正</button>
+</nav>
+<main>
+  <section id="view-video" class="view"></section>
+  <section id="view-settings" class="view"></section>
+  <section id="view-run" class="view"></section>
+  <section id="view-review" class="view"></section>
+</main>
+<div id="toasts"></div>
+<div id="modal" hidden></div>
+<script src="app.js"></script>
+</body>
+</html>

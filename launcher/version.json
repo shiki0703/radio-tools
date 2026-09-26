@@ -1,0 +1,13 @@
+{
+  "version": "2026.09.27",
+  "released": "2026-09-27",
+  "notes": [
+    "書き出した動画で、映像と音声が少しずつずれる不具合を直しました",
+    "書き出しが約4倍速くなりました(画質は同じ)",
+    "画質を「標準 / 高画質 / 最高画質」から選べるようになりました",
+    "いらない部分を削る機能(トリム)を追加しました",
+    "同じ Wi-Fi のスマホから使えるようになりました(QR を読むだけ)"
+  ],
+  "check": "https://raw.githubusercontent.com/shiki0703/radio-tools/main/launcher/version.json",
+  "download": "https://codeload.github.com/shiki0703/radio-tools/zip/refs/heads/main"
+}
