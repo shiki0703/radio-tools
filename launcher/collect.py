@@ -35,21 +35,35 @@ def load_sources() -> dict:
     return {k: Path(v) for k, v in json.loads(CONFIG.read_text(encoding='utf-8')).items()}
 
 
+def is_program(rel: Path, path: Path) -> bool:
+    """配るプログラムのファイルか(作業データ・環境・一時ファイルではないか)"""
+    if any(part in SKIP_DIRS for part in rel.parts) or path.is_dir():
+        return False
+    return path.suffix.lower() not in SKIP_SUFFIX and path.name not in SKIP_NAMES
+
+
 def copy_program(src: Path, dst: Path) -> int:
-    if dst.exists():
-        shutil.rmtree(dst)
-    count = 0
+    """プログラムのファイルだけを上書きする。
+
+    このフォルダでツールを実際に使っていることもあるので、フォルダごと消して入れ直すことはしない。
+    作業データの場所(data / results など)には一切触れない。
+    """
+    wanted = set()
     for path in src.rglob('*'):
         rel = path.relative_to(src)
-        if any(part in SKIP_DIRS for part in rel.parts) or path.is_dir():
-            continue
-        if path.suffix.lower() in SKIP_SUFFIX or path.name in SKIP_NAMES:
+        if not is_program(rel, path):
             continue
         target = dst / rel
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(path, target)
-        count += 1
-    return count
+        wanted.add(rel)
+    # 元のほうから無くなったプログラムのファイルだけを消す
+    if dst.is_dir():
+        for path in list(dst.rglob('*')):
+            rel = path.relative_to(dst)
+            if is_program(rel, path) and rel not in wanted:
+                path.unlink()
+    return len(wanted)
 
 
 def tidy_powershell(folder: Path) -> int:
@@ -71,6 +85,8 @@ def make_zip(root: Path, out: Path) -> int:
         for path in root.rglob('*'):
             rel = path.relative_to(root)
             if not path.is_file() or rel.parts[0] in {'runtime', '.git'} or rel.name in DEV_ONLY:
+                continue
+            if not is_program(rel, path):      # このフォルダで使ったときの作業データは入れない
                 continue
             z.write(path, Path(root.name) / rel)
             n += 1

@@ -445,11 +445,12 @@ function playableUrl(path) {
     inspect([path]).then(() => { renderAll(); syncPlayer(isPlaying()); }).catch(() => {});
     return null;
   }
-  // プレビューは軽量版を先に使う(元の大きな動画は、つまみ送りが重い)
+  // プレビューは軽量版を使う。4K60 の元動画をブラウザでそのまま流すと、1秒に2コマほどしか
+  // 出せずに音とずれて見える(PC によっては再生できない)ので、できあがるまで待つ
   if ((FROM_PHONE || S.light) && info.kind === 'video') {
     if (info.proxy_ready && info.proxy_path) return mediaUrl(info.proxy_path);
     startProxy(path, true);
-    if (FROM_PHONE) return null;        // スマホは元動画が重すぎるので、できるまで待つ
+    return null;
   }
   if (info.playable) return mediaUrl(path);
   if (info.proxy_ready) return mediaUrl(info.proxy_path);
@@ -504,8 +505,12 @@ function mediaWaitMessage(path) {
   const eta = job?.eta != null ? `・残り${fmtMinutes(job.eta)}` : '';
   const why = FROM_PHONE && info.playable
     ? 'スマホで見られるように、'
-    : `${basename(path)} はそのまま再生できないため、`;
-  return `${why}プレビュー用の軽量版を作成中… ${Math.floor((job?.progress || 0) * 100)}%${eta}(初回のみ)`;
+    : S.light && info.kind === 'video'
+      ? 'なめらかに再生できるように、'
+      : `${basename(path)} はそのまま再生できないため、`;
+  const hint = !FROM_PHONE && S.light && info.kind === 'video'
+    ? '\n(元の画質ですぐ見るときは「なめらか優先」を外してください。重くてカクつくことがあります)' : '';
+  return `${why}プレビュー用の軽量版を作成中… ${Math.floor((job?.progress || 0) * 100)}%${eta}(初回のみ)${hint}`;
 }
 
 /* ---------- navigation ---------- */
@@ -792,6 +797,9 @@ async function startAnalyze() {
   await inspect([...p.audios, ...p.videos]);
   const r = await api('/api/analyze', { audios: p.audios, videos: p.videos, previous: p.episodes });
   watchJob(r.job, 'analyze');
+  if (S.light || FROM_PHONE) {
+    for (const v of p.videos) if (S.media[v]?.kind === 'video' && !S.media[v].proxy_ready) startProxy(v, true);
+  }
 }
 
 /* ---------- step 3: review ---------- */
@@ -3126,6 +3134,7 @@ function jumpBlank(dir) {
 function setLightPreview(on) {
   S.light = on;
   try { localStorage.setItem('radio-sync-light', on ? 'on' : 'off'); } catch { /* 使えなくても動く */ }
+  if ($('chkLight')) $('chkLight').checked = on;
   CUT.previewSrc = '';
   P.camUrl = '';
   renderAll();
@@ -4502,6 +4511,8 @@ function wire() {
   $('btnSegStart').onclick = () => seek(curSeg()?.start || 0);
   $('btnBack').onclick = () => seek(Math.max(0, playTime() - 2));
   $('chkCamAudio').onchange = () => { cam.muted = !$('chkCamAudio').checked; };
+  $('chkLight').checked = S.light;
+  $('chkLight').onchange = () => setLightPreview($('chkLight').checked);
   for (const b of $('sideTabs').querySelectorAll('button')) b.onclick = () => setTab(b.dataset.tab);
   $('btnSampleNext').onclick = () => nextSample(1);
   $('btnSamplePrev').onclick = () => nextSample(-1);
