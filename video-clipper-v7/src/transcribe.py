@@ -8,9 +8,32 @@ Whisperのセグメント時刻は無音パディング等で発話より早く�
 import re
 from collections import Counter
 
+import av
 from faster_whisper import WhisperModel
 
 from src.preprocess import check_cancelled
+
+
+def _allow_new_pyav():
+    """faster-whisper は音声を開くとき av.open(..., metadata_errors=...) を使うが、
+    PyAV 19 でこの引数がなくなり、文字起こしが TypeError で止まる。
+    なくなった引数だけを外して開き直す(古い PyAV ではそのまま通る)。"""
+    original = getattr(av.open, '__wrapped__', av.open)
+
+    def open_compat(*args, **kwargs):
+        try:
+            return original(*args, **kwargs)
+        except TypeError as e:
+            if 'metadata_errors' not in kwargs or 'metadata_errors' not in str(e):
+                raise
+            kwargs.pop('metadata_errors')
+            return original(*args, **kwargs)
+
+    open_compat.__wrapped__ = original
+    av.open = open_compat
+
+
+_allow_new_pyav()
 
 # 一度読み込んだモデルを使い回す(2回目以降の処理が大幅に速くなる)
 _model_cache = {}

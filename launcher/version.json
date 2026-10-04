@@ -1,8 +1,8 @@
 {
-  "version": "2026.10.05",
+  "version": "2026.10.06",
   "released": "2026-10-05",
   "notes": [
-    "Radio Sync のプレビューで、ラジオ音声(mp3)と映像が1秒以上ずれることがある問題を直しました"
+    "動画クリッパーで、文字起こしの途中に「metadata_errors」というエラーで止まる問題を直しました"
   ],
   "check": "https://raw.githubusercontent.com/shiki0703/radio-tools/main/launcher/version.json",
   "download": "https://codeload.github.com/shiki0703/radio-tools/zip/refs/heads/main"

@@ -13,7 +13,8 @@ $script:FFMPEG_URLS = @(
   'https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip',
   'https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip'
 )
-$script:PACKAGES = @('numpy>=2.0,<3', 'scipy>=1.14,<2', 'faster-whisper>=1.0.0', 'anthropic>=1.0,<2')
+# av は faster-whisper が音声を読むのに使う。19 で引数が変わり文字起こしが止まったので、確かめた 18 までにしておく
+$script:PACKAGES = @('numpy>=2.0,<3', 'scipy>=1.14,<2', 'faster-whisper>=1.0.0', 'av>=11,<19', 'anthropic>=1.0,<2')
 
 function Invoke-Quiet($exe, [string[]]$arguments) {
   # 外のプログラムを静かに動かして、終了コードと出た文字を返す。
