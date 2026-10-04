@@ -1349,7 +1349,11 @@ async function makeChaptersWithAi() {
   renderChapters();
   try {
     const data = await api('/api/chapters/ai', { project: name });
-    if (CH.project === name) { CH.data = data; toast('AI で見出しを作りました。おかしい所は直してから使ってください。', 'ok'); }
+    if (CH.project === name) {
+      CH.data = data;
+      toast('AI で見出しを作りました。おかしい所は直してから使ってください。', 'ok');
+      setTimeout(offerChapterTitles, 0);
+    }
   } finally {
     CH.busy = '';
     if (CH.project === name) renderChapters();
@@ -1391,6 +1395,7 @@ function pasteChapterReply() {
       close();
       setChapters(data);
       toast(`${data.chapters.length}個の見出しを読み込みました`, 'ok');
+      offerChapterTitles();
     } catch (e) {
       message.textContent = e.message;
     }
@@ -1525,6 +1530,48 @@ function addChapterRow() {
 }
 
 /** 概要欄の見出しを、左上に焼き込む見出しにする(反映は「この内容で作り直す」) */
+/** 概要欄の見出しから、左上に焼き込む見出し(本編の時刻)を作る */
+function titlesFromChapters(d, p) {
+  const offset = d.offset || 0, bodyEnd = p.duration || (p.segments.at(-1)?.end ?? 0);
+  const rows = d.chapters.filter((c) => (c.kind || 'body') === 'body' && c.title.trim());
+  return rows.map((c, i) => ({
+    start: Math.max(0, c.start - offset),
+    end: Math.min(bodyEnd, rows[i + 1] ? rows[i + 1].start - offset : bodyEnd),
+    text: (c.label || '').trim() || c.title.trim(),
+  })).filter((t) => t.end - t.start >= 1);
+}
+
+const titlesSig = (titles) => JSON.stringify(titles.filter((t) => t.text.trim()).map((t) => [Math.round(t.start), t.text.trim()]));
+
+/** 確認・修正で開いている結果の概要欄で、左上の見出しがまだ動画の見出しに入っていないか */
+function chaptersNotApplied() {
+  const p = S.project, d = CH.data;
+  if (S.step !== 'review' || !p?.has_captioned || !d || CH.project !== p.name || d.source === 'draft') return null;
+  const want = titlesFromChapters(d, p);
+  if (!want.length || titlesSig(want) === titlesSig(S.edit.titles)) return null;
+  return want;
+}
+
+function applyChapterTitles(want) {
+  S.edit.titles = want;
+  S.edit.showTitles = true;
+  saveDraftSoon();
+  renderReview();
+}
+
+/** 返事を貼った・AI で作った直後に、左上の見出しにも入れるか聞く */
+async function offerChapterTitles() {
+  const want = chaptersNotApplied();
+  if (!want) return;
+  const go = await ask('左上の見出しも、この内容にしますか?',
+    `概要欄の「左上の見出し」(${want.length}個)を、動画の左上に出す見出しにも入れます。`
+    + '動画に反映するには、このあと「この内容で作り直す」を押してください。',
+    [{ label: '入れる', value: true, primary: true }, { label: 'あとで', value: false }]);
+  if (!go) return;
+  applyChapterTitles(want);
+  toast('左上の見出しに入れました。「この内容で作り直す」で動画に反映されます。', 'ok');
+}
+
 async function useChaptersForTitles() {
   const p = S.project, d = CH.data;
   const rows = d.chapters.filter((c) => (c.kind || 'body') === 'body' && c.title.trim());
@@ -1546,15 +1593,7 @@ async function useChaptersForTitles() {
     + '動画に反映するには、このあと「この内容で作り直す」を押してください。',
     [{ label: '置き換える', value: true, primary: true }, { label: 'やめる', value: false }]);
   if (!go) return;
-  const offset = d.offset || 0, bodyEnd = p.duration || (p.segments.at(-1)?.end ?? 0);
-  S.edit.titles = rows.map((c, i) => ({
-    start: Math.max(0, c.start - offset),
-    end: Math.min(bodyEnd, rows[i + 1] ? rows[i + 1].start - offset : bodyEnd),
-    text: (c.label || '').trim() || c.title.trim(),
-  })).filter((t) => t.end - t.start >= 1);
-  S.edit.showTitles = true;
-  saveDraftSoon();
-  renderReview();
+  applyChapterTitles(titlesFromChapters(d, p));
   toast('左上の見出しを置き換えました。「この内容で作り直す」で動画に反映されます。', 'ok');
 }
 
@@ -1637,6 +1676,18 @@ async function startReburn() {
   if (!targets.length) return toast('作り直す対象を1つ以上選んでください', 'warn');
   const segments = editedSegs();
   if (!segments.length) return toast('テロップの文字がすべて空です', 'warn');
+  // 概要欄で作った左上の見出しが、まだ動画の見出しに入っていないまま作り直さないように
+  const want = chaptersNotApplied();
+  if (want && titlesSig(want) !== CH.keepSig) {
+    const ans = await ask('左上の見出しが、概要欄と違います',
+      '概要欄の「左上の見出し」が、まだ動画の左上の見出しに入っていません。入れてから作り直しますか?',
+      [{ label: '入れてから作り直す', value: 'apply', primary: true },
+       { label: '今の見出しのまま', value: 'keep' },
+       { label: 'やめる', value: null }]);
+    if (!ans) return;
+    if (ans === 'apply') applyChapterTitles(want);
+    else CH.keepSig = titlesSig(want);      // 同じ内容では、もう聞かない
+  }
   detachVideos();  // the files being rewritten must not be held open by the players
   await api('/api/reburn', {
     project: p.name, segments, style: S.edit.style, targets,

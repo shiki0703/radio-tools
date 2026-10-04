@@ -815,6 +815,17 @@ class Dialogs:
     """Native file dialogs, all run on one Tk thread, kept in front of the window."""
 
     def __init__(self):
+        self.native = None
+        try:
+            import tkinter  # noqa: F401
+        except ImportError:
+            # 「はじめる」で入れる Python(埋め込み版)には tkinter が無い。Windows の標準の画面を使う
+            if str(HERE) not in sys.path:
+                sys.path.insert(0, str(HERE))
+            import native_dialog
+            self.native = native_dialog
+            self.lock = threading.Lock()
+            return
         self.requests = queue.Queue()
         threading.Thread(target=self._loop, daemon=True).start()
 
@@ -847,6 +858,14 @@ class Dialogs:
                 root = None
 
     def ask(self, function):
+        if self.native:
+            with self.lock:                 # 画面は1つずつ出す
+                try:
+                    return function(None, self.native)
+                except UserError:
+                    raise
+                except Exception as exc:
+                    raise UserError(f'ファイル選択の画面を開けませんでした: {exc}') from exc
         reply = queue.Queue()
         self.requests.put((function, reply))
         ok, value = reply.get()
