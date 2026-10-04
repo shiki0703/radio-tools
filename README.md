@@ -42,10 +42,11 @@ Windows 10 / 11 と、初回セットアップのときだけインターネッ�
 
 ## 開発用
 
-手元の3つのツールを、この配布のかたちに集めなおす:
+ツールのプログラムは、**このリポジトリにあるものを正**とします。直すときはこのフォルダを直接直して、コミット・push してください。
 
-```
-python launcher/collect.py
-```
+1. 直す(`radio_sync` / `video-clipper-v7` / `制作ハブ` / `launcher`)
+2. テストを流す: `runtime\python\python.exe -m unittest discover video-clipper-v7\tests`
+3. `launcher/version.json` の `version` と `notes` を書き換える
+4. コミットして push する → 利用者の次回起動時に更新が案内されます
 
-`launcher/version.json` の `version` を上げて push すると、利用者の次回起動時に更新が案内されます。
+配布用の ZIP がほしいときは `python launcher/collect.py`(このフォルダの中身から作ります。作業データは入りません)。
