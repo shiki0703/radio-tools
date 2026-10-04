@@ -45,12 +45,14 @@ from src.highlight import detect_highlights  # noqa: E402
 from src.title import make_topic_titles  # noqa: E402
 from src.bookend import attach as attach_bookend  # noqa: E402
 from src.clip import cut_clips  # noqa: E402
+from src import chapters as chap  # noqa: E402
 
 WEB = HERE / 'web'
 DATA = HERE / 'data'
 RESULTS = HERE / 'results'
 THUMBS = DATA / 'thumbs'
 SETTINGS = DATA / 'settings.json'
+SECRETS = DATA / 'secrets.json'     # AI に使う API キー(この PC の中だけ。画面には返さない)
 INSTANCE = DATA / 'instance.json'
 LOG = DATA / 'server.log'
 PREFERRED_PORT = 8766
@@ -62,7 +64,7 @@ TYPES = {'.mp4': 'video/mp4', '.m4v': 'video/mp4', '.mov': 'video/mp4', '.webm':
          '.png': 'image/png', '.srt': 'text/plain; charset=utf-8', '.json': 'application/json; charset=utf-8',
          '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8'}
 CLIP_STYLE = dict(DEFAULT_STYLE, pos_y=0.78)
-DEFAULT_SETTINGS = {'do_transcribe': True, 'do_clip': True, 'accuracy': 'standard', 'hq': False, 'show_titles': False, 'title_scope': 'corner', 'intro': '', 'outro': '',
+DEFAULT_SETTINGS = {'do_transcribe': True, 'do_clip': True, 'accuracy': 'standard', 'hq': False, 'show_titles': False, 'title_scope': 'corner', 'title_maker': 'ai', 'intro': '', 'outro': '',
                     'orientation': 'horizontal', 'clip_length': 30, 'style': {'main': DEFAULT_STYLE, 'clip': CLIP_STYLE}}
 
 CGNAT = ipaddress.ip_network('100.64.0.0/10')    # 回線側 NAT の中(モバイル回線などで使われる)
@@ -81,7 +83,11 @@ LOCK = threading.Lock()
 LOG_STREAM = [sys.stderr]
 
 JOB = {'state': 'idle', 'kind': '', 'project': '', 'steps': [], 'step': -1, 'percent': 0, 'message': '',
-       'started': 0.0, 'error': '', 'hint': '', 'detail': ''}
+       'started': 0.0, 'error': '', 'hint': '', 'detail': '',
+       'wait': '', 'wait_note': '', 'paused': 0.0}   # wait='titles' … 見出しを作ってもらうのを待っている
+# 見出しを待っているあいだ、画面からの「続ける」を受け取る
+TITLE_GO = threading.Event()
+TITLE_REPLY = {}
 WEIGHTS = []
 
 def use_bundled_ffmpeg():
@@ -118,9 +124,20 @@ def key(path):
 def save_json(data, path):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    temp = path.with_name(path.name + '.tmp')
+    # 書き込む人ごとに別の一時ファイルにする(画面と処理が同時に保存しても混ざらないように)
+    temp = path.with_name(f'{path.name}.{threading.get_ident()}.tmp')
     temp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding='utf-8')
-    os.replace(temp, path)
+    for attempt in range(40):
+        try:
+            os.replace(temp, path)
+            return
+        except PermissionError:
+            # Windows では、ほかの処理が読んでいる最中のファイルは置き換えられない
+            # (画面が1秒ごとに結果の一覧を読んでいる)。少し待ってやり直す
+            if attempt == 39:
+                temp.unlink(missing_ok=True)
+                raise
+            time.sleep(0.05)
 
 
 # ---------- settings & projects ----------
@@ -150,6 +167,7 @@ def clean_settings(raw):
         'hq': bool(raw.get('hq', False)),
         'show_titles': bool(raw.get('show_titles', False)),
         'title_scope': raw.get('title_scope') if raw.get('title_scope') in ('fine', 'corner', 'whole') else 'corner',
+        'title_maker': raw.get('title_maker') if raw.get('title_maker') in ('ai', 'words') else 'ai',
         'intro': clean_clip_path(raw.get('intro')),
         'outro': clean_clip_path(raw.get('outro')),
         'orientation': raw.get('orientation') if raw.get('orientation') in ('horizontal', 'vertical') else 'horizontal',
@@ -285,7 +303,8 @@ def begin(kind, project, steps, weights):
     total = sum(weights)
     WEIGHTS[:] = [w * 100 / total for w in weights]
     JOB.update(state='running', kind=kind, project=project['name'], steps=steps, step=-1, percent=0,
-               message='準備しています…', started=time.time(), error='', hint='', detail='')
+               message='準備しています…', started=time.time(), error='', hint='', detail='',
+               wait='', wait_note='', paused=0.0)
     CANCEL_EVENT.clear()
 
 
@@ -369,7 +388,7 @@ def run_process(project):
                                   on_progress=lambda f: progress('文字起こし', f, f'音声を文字起こししています({round(f * 100)}%)'))
             project['segments'] = segments
             if settings['show_titles']:
-                project['titles'] = make_topic_titles(segments, scope=settings.get('title_scope', 'corner'))
+                project['titles'] = topic_titles(project, segments)
             save_project(project)
             burn(project, segments, 'テロップ焼き込み', '字幕を動画に焼き込んでいます')
         if settings['do_clip']:
@@ -385,6 +404,81 @@ def run_process(project):
     finally:
         if wav:
             Path(wav).unlink(missing_ok=True)
+
+
+def topic_titles(project, segments):
+    """左上に焼き込む見出しを作る。
+
+    「AI で作る」のときは、概要欄のチャプターを先に作り、その短い見出しを使う(概要欄も同時にできる)。
+    ふだんは、文字起こしが終わったところで一度止まり、画面で概要欄を作って
+    (依頼文を ChatGPT などに貼る)もらってから続ける。API キーがあれば、止まらずに AI に頼む。
+    焼き込みを1回で済ませるため(あとから見出しを直すと、作り直しが要る)。
+    """
+    settings = project['settings']
+    if settings.get('title_maker', 'ai') != 'ai':
+        project['titles_by'] = 'words'
+        return make_topic_titles(segments, scope=settings.get('title_scope', 'corner'))
+    note = ''
+    if api_key():
+        progress('文字起こし', 1.0, 'AI で話題の見出しを作っています(1分ほど)')
+        try:
+            body = body_seconds(project)
+            data = chap.normalize(chap.ask_claude(segments, api_key()), segments, body)
+            titles = chap.overlay_titles(data['chapters'], body)
+            if titles:
+                chapters_store(project, keep_bookend_names(project, data), 'ai')
+                log(f"見出しを AI で作りました: {project['name']}({len(titles)}個)")
+                project.update(titles_by='ai', title_note='')
+                return titles
+            note = 'AI の返事に使える見出しがありませんでした。'
+        except chap.ChapterError as exc:
+            log(f"AI で見出しを作れませんでした: {exc}")
+            note = f'AI で見出しを作れませんでした。{exc}'
+        except Exception:
+            log(traceback.format_exc())
+            note = 'AI で見出しを作れませんでした。'
+    return wait_for_titles(project, segments, note)
+
+
+def wait_for_titles(project, segments, note):
+    """画面で見出し(概要欄)が作られるのを待つ。中止されたら止める"""
+    TITLE_GO.clear()
+    TITLE_REPLY.clear()
+    save_project(project)                 # 文字起こしは保存しておく(画面の概要欄がこれを読む)
+    JOB.update(wait='titles', wait_note=note, message='見出しを作ってください(下の手順)')
+    since = time.time()
+    try:
+        while not TITLE_GO.wait(0.5):
+            if CANCEL_EVENT.is_set():
+                raise ProcessCancelled()
+    finally:
+        JOB.update(wait='', wait_note='', paused=JOB.get('paused', 0.0) + time.time() - since)
+    reply = dict(TITLE_REPLY)
+    if reply.get('mode') == 'chapters':
+        titles = chap.overlay_titles(reply['chapters'], body_seconds(project))
+        if titles:
+            project.update(titles_by=reply.get('source') or 'edit', title_note='')
+            return titles
+    project.update(titles_by='words', title_note='')
+    return make_topic_titles(segments, scope=project['settings'].get('title_scope', 'corner'))
+
+
+def titles_continue(body):
+    """「この見出しで続ける」「言葉を拾う方式で続ける」"""
+    if JOB['wait'] != 'titles' or JOB['project'] != body.get('project'):
+        raise UserError('いまは見出しを待っていません。画面を開き直してください。')
+    if body.get('mode') == 'chapters':
+        chapters_save(body)
+        saved = load_chapters(load_project(body.get('project'))) or {}
+        rows = [c for c in saved.get('chapters', []) if c['title'].strip()]
+        if not rows:
+            raise UserError('見出しがありません。作ってから続けるか、「言葉を拾う方式で続ける」を選んでください。')
+        TITLE_REPLY.update(mode='chapters', chapters=rows, source=saved.get('source', 'edit'))
+    else:
+        TITLE_REPLY.update(mode='words')
+    JOB['message'] = '焼き込みを続けています'
+    TITLE_GO.set()
+    return {'ok': True}
 
 
 def write_titles_srt(project):
@@ -412,6 +506,8 @@ def burn(project, segments, step, message):
         progress(step, .98, 'オープニング・エンディングをつないでいます')
         attach_bookend(str(out_dir / 'captioned.mp4'), str(out_dir / 'captioned.mp4'),
                        intro=intro, outro=outro, hq=settings['hq'])
+    project['intro_seconds'] = clip_seconds(intro)
+    project['outro_seconds'] = clip_seconds(outro)
     project['has_captioned'] = True
     save_project(project)
 
@@ -514,6 +610,166 @@ def cancel(body):
     return {'ok': True}
 
 
+# ---------- 概要欄のチャプター ----------
+#
+# 見出しは本編の時刻で chapters.json に持つ(オープニング・エンディングの名前も一緒に)。
+# 画面に出すとき・概要欄の文を作るときに、その時点でつないであるオープニングの長さを足す。
+# あとからオープニングを付けたり替えたりしても、時刻がずれないようにするため。
+
+def clip_seconds(path):
+    """動画の長さ(秒)。無い・読めないときは 0"""
+    if not path:
+        return 0.0
+    try:
+        return float(probe(path)['duration'])
+    except Exception:
+        return 0.0
+
+
+def bookend_seconds(project, kind):
+    """前後につないだ(つなぐ予定の)オープニング・エンディングの長さ(秒)。kind は 'intro' / 'outro'"""
+    if isinstance(project.get(f'{kind}_seconds'), (int, float)):
+        return float(project[f'{kind}_seconds'])
+    # 長さを覚える前に作った結果や、まだ焼き込む前(見出し待ち)は、つなぐ動画からその場で測る
+    return clip_seconds(clean_clip_path(project['settings'].get(kind)))
+
+
+def intro_seconds(project):
+    return bookend_seconds(project, 'intro')
+
+
+def api_key():
+    try:
+        saved = json.loads(SECRETS.read_text(encoding='utf-8')).get('anthropic_api_key', '')
+    except (OSError, ValueError, AttributeError):
+        saved = ''
+    return saved or os.environ.get('ANTHROPIC_API_KEY', '')
+
+
+def set_api_key(body):
+    value = str(body.get('key') or '').strip()
+    if value and (not value.startswith('sk-ant-') or len(value) < 30 or any(c.isspace() for c in value)):
+        raise UserError('API キーの形が違うようです。「sk-ant-」で始まる文字列を、そのまま貼り付けてください。')
+    if value:
+        save_json({'anthropic_api_key': value}, SECRETS)
+    else:
+        SECRETS.unlink(missing_ok=True)
+    return {'has_key': bool(api_key())}
+
+
+def chapters_path(project):
+    return RESULTS / project['name'] / 'chapters.json'
+
+
+def chapter_segments(project):
+    if not project.get('segments'):
+        raise UserError('文字起こしがないため作れません。「文字起こし + テロップ」を入にして処理した結果で使えます。')
+    return project['segments']
+
+
+def body_seconds(project):
+    segments = project.get('segments') or []
+    return float(project.get('duration') or (segments[-1]['end'] if segments else 0))
+
+
+def load_chapters(project):
+    """保存してある案(本編の時刻)。無ければ None"""
+    try:
+        saved = json.loads(chapters_path(project).read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        return None
+    if saved.get('timebase') != 'body':
+        # 以前の形(できあがった動画の時刻)で保存したもの → 本編の時刻に直す
+        rows = [{**c, 'kind': 'body'} for c in saved.get('chapters', [])]
+        saved = {**saved, **chap.from_timeline(rows, intro_seconds(project), body_seconds(project),
+                                               bookend_seconds(project, 'outro'))}
+    return saved
+
+
+def chapter_view(project, data, source):
+    intro, outro, body = intro_seconds(project), bookend_seconds(project, 'outro'), body_seconds(project)
+    rows = chap.timeline(data, intro, body, outro)
+    return {'topics': data['topics'], 'chapters': rows, 'source': source,
+            'problems': chap.problems(rows), 'text': chap.description(data['topics'], rows),
+            'offset': intro, 'outro': outro, 'has_key': bool(api_key())}
+
+
+def chapters_store(project, data, source):
+    keep = {k: data[k] for k in ('topics', 'chapters', 'intro_title', 'outro_title') if k in data}
+    save_json({**keep, 'source': source, 'timebase': 'body'}, chapters_path(project))
+    return chapter_view(project, keep, source)
+
+
+def chapters_get(body):
+    """保存してある案。まだ無ければ、話題の見出しから作った下書き"""
+    project = load_project(body.get('project'))
+    segments = chapter_segments(project)
+    saved = load_chapters(project)
+    if saved is not None:
+        return chapter_view(project, {**saved, 'topics': saved.get('topics', [])}, saved.get('source', 'edit'))
+    return chapter_view(project, chap.draft(segments, project.get('titles'), body_seconds(project)), 'draft')
+
+
+def keep_bookend_names(project, data):
+    """新しく作り直した案でも、オープニング・エンディングの名前は前のものを引き継ぐ"""
+    before = load_chapters(project) or {}
+    for k in ('intro_title', 'outro_title'):
+        if k in before:
+            data[k] = before[k]
+    return data
+
+
+def chapters_ai(body):
+    project = load_project(body.get('project'))
+    segments = chapter_segments(project)
+    key_value = api_key()
+    if not key_value:
+        raise UserError('API キーが設定されていません。「依頼文をコピー」して ChatGPT などに貼る方法で作れます。')
+    try:
+        raw = chap.ask_claude(segments, key_value)
+    except chap.ChapterError as exc:
+        raise UserError(str(exc)) from exc
+    data = chap.normalize(raw, segments, body_seconds(project))
+    if not data['chapters']:
+        raise UserError('AI の返事に使える見出しがありませんでした。もう一度お試しください。')
+    log(f"チャプターを AI で作りました: {project['name']}({len(data['chapters'])}個)")
+    return chapters_store(project, keep_bookend_names(project, data), 'ai')
+
+
+def chapters_prompt(body):
+    """ChatGPT や claude.ai に貼る依頼文"""
+    return {'text': chap.paste_prompt(chapter_segments(load_project(body.get('project'))))}
+
+
+def chapters_paste(body):
+    project = load_project(body.get('project'))
+    segments = chapter_segments(project)
+    try:
+        raw = chap.parse_reply(body.get('text'))
+    except chap.ChapterError as exc:
+        raise UserError(str(exc)) from exc
+    data = chap.normalize(raw, segments, body_seconds(project))
+    if not data['chapters']:
+        raise UserError('使える見出しがありませんでした。時刻が動画の長さを超えていないか確かめてください。')
+    return chapters_store(project, keep_bookend_names(project, data), 'paste')
+
+
+def chapters_save(body):
+    """画面で直した内容を保存する(画面の時刻は、できあがった動画の時刻)"""
+    project = load_project(body.get('project'))
+    topics = [str(t).strip() for t in (body.get('topics') or []) if str(t).strip()][:20]
+    data = chap.from_timeline(body.get('chapters') or [], intro_seconds(project), body_seconds(project),
+                              bookend_seconds(project, 'outro'), load_chapters(project))
+    source = body.get('source') if body.get('source') in ('ai', 'paste', 'edit', 'draft') else 'edit'
+    return chapters_store(project, {**data, 'topics': topics}, source)
+
+
+def chapters_reset(body):
+    """保存した案を消して、下書きに戻す"""
+    chapters_path(load_project(body.get('project'))).unlink(missing_ok=True)
+    return chapters_get(body)
+
+
 # ---------- screens ----------
 
 def project_view(name):
@@ -526,6 +782,7 @@ def project_view(name):
             files.append({'name': f, 'path': str(folder / f), 'size': (folder / f).stat().st_size,
                           'url': media_url(folder / f) + stamp})
     return {**project, 'folder': str(folder), 'files': files, 'source_exists': Path(project['source']).is_file(),
+            'lead': intro_seconds(project) if project.get('has_captioned') else 0.0,
             'can_fix': bool(project.get('work_video')) and Path(project['work_video']).is_file()}
 
 
@@ -541,13 +798,15 @@ def state(body=None):
     LAST_UI[0] = time.time()
     job = dict(JOB)
     if job['state'] == 'running':
-        elapsed = time.time() - job['started']
+        elapsed = time.time() - job['started'] - job.get('paused', 0.0)
         job['elapsed'] = round(elapsed)
         job['eta'] = elapsed * (100 - job['percent']) / job['percent'] if job['percent'] >= 3 and elapsed > 5 else None
+        if job.get('wait'):
+            job['eta'] = None
     pending, PENDING['path'] = PENDING['path'], ''
     return {'job': job, 'settings': load_settings(), 'recent': recent_projects(),
             'fonts': [{'value': k, 'label': FONT_LABELS.get(k, k)} for k in FONT_MAP], 'pending': pending,
-            'results': str(RESULTS)}
+            'results': str(RESULTS), 'has_key': bool(api_key())}
 
 
 # ---------- dialogs, folders ----------
@@ -735,6 +994,14 @@ POST = {
     '/api/open': open_place,
     '/api/request-open': request_open,
     '/api/settings': lambda b: save_json(clean_settings(b.get('settings')), SETTINGS) or {'ok': True},
+    '/api/chapters': chapters_get,
+    '/api/chapters/ai': chapters_ai,
+    '/api/chapters/prompt': chapters_prompt,
+    '/api/chapters/paste': chapters_paste,
+    '/api/chapters/save': chapters_save,
+    '/api/chapters/reset': chapters_reset,
+    '/api/apikey': set_api_key,
+    '/api/titles-continue': titles_continue,
 }
 
 

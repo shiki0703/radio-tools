@@ -565,3 +565,58 @@ details.adv summary { cursor: pointer; font-size: 13px; font-weight: 600; }
 
 /* 指でタイムラインを操作するとき、画面ごと動かないようにする */
 
+/* ---------- YouTube の概要欄(チャプター) ---------- */
+.chapactions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.chapgrid { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(280px, 1fr); gap: 18px; align-items: start; }
+.chapgrid.busy { opacity: .55; pointer-events: none; }
+.chaplabel { font-size: 12px; font-weight: 700; color: var(--muted); }
+.chapedit { display: grid; gap: 6px; }
+.chapedit > input { width: 100%; }
+.chaplines { display: grid; gap: 4px; max-height: 460px; overflow: auto; padding-right: 4px; }
+.chapline, .chaphead { display: grid; grid-template-columns: 30px 92px minmax(0, 1fr) 224px 30px; gap: 6px; align-items: center; }
+.chaphead { font-size: 11px; font-weight: 700; color: var(--muted); }
+.chapline .clabel { font-size: 13px; }
+.useforoverlay { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-top: 6px; padding-top: 10px; border-top: 1px dashed var(--line); }
+.chapline input { width: 100%; }
+.chapline .ctime { font-size: 13px; padding-left: 6px; padding-right: 6px; }
+.chapline .ctime.bad { border-color: var(--danger); background: #fdecec; }
+.chapline .ctime:disabled { color: var(--muted); background: transparent; }
+.chapline button { padding: 4px 0; }
+.chapline .del { color: var(--muted); font-size: 16px; line-height: 1; }
+.chapline .del:hover:not(:disabled) { color: var(--danger); }
+.chapedit .addrow { justify-self: start; }
+.chapout { display: grid; gap: 6px; position: sticky; top: 12px; }
+.chapout textarea { width: 100%; resize: vertical; font-size: 12.5px; line-height: 1.7; background: var(--bg); }
+.keynotes { margin: 0; padding-left: 18px; line-height: 1.8; }
+.spinner { width: 14px; height: 14px; border-radius: 50%; border: 2px solid currentColor; border-right-color: transparent;
+  display: inline-block; flex: none; margin-top: 3px; animation: spin .8s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+@media (max-width: 820px) {
+  .chapgrid { grid-template-columns: 1fr; }
+  .chapout { position: static; }
+  .chaplines { max-height: none; }
+  .chapline, .chaphead { grid-template-columns: 30px 84px minmax(0, 1fr) 210px 30px; gap: 4px; }
+  .chapactions > button { flex: 1 1 auto; }
+}
+@media (max-width: 560px) {
+  /* 見出しは長いので、スマホでは時刻の下の段に全幅で置く */
+  .chapline { grid-template-columns: 30px 92px minmax(0, 1fr) 34px; row-gap: 4px; padding-bottom: 6px; border-bottom: 1px solid var(--line); }
+  .chapline .ctitle { grid-column: 1 / -1; order: 5; }
+  .chapline .clabel { grid-column: 1 / -1; order: 6; }
+  .chapline .del { grid-column: 4; }
+  .chaphead { display: none; }
+}
+
+/* 文字起こしのあと、見出しを決めるまで止まっているとき */
+.waitsteps { margin: 0; padding-left: 20px; line-height: 1.9; }
+.waitgo { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; position: sticky; bottom: 12px; z-index: 5;
+  box-shadow: 0 -4px 18px rgba(16, 24, 40, .08); }
+@media (max-width: 560px) {
+  .waitgo > button { flex: 1 1 100%; }
+  .waitgo > span { display: none; }
+}
+.chapline .cnone { font-size: 12px; color: var(--muted); padding: 0 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.chapactions .small { font-size: 12px; }
+.pasted { color: var(--accent); }
+.chapline .clabel.long { border-color: var(--danger); background: #fdecec; }
+

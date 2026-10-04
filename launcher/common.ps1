@@ -13,7 +13,7 @@ $script:FFMPEG_URLS = @(
   'https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip',
   'https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip'
 )
-$script:PACKAGES = @('numpy>=2.0,<3', 'scipy>=1.14,<2', 'faster-whisper>=1.0.0')
+$script:PACKAGES = @('numpy>=2.0,<3', 'scipy>=1.14,<2', 'faster-whisper>=1.0.0', 'anthropic>=1.0,<2')
 
 function Invoke-Quiet($exe, [string[]]$arguments) {
   # 外のプログラムを静かに動かして、終了コードと出た文字を返す。
@@ -109,7 +109,7 @@ function Install-Python {
 
 function Test-Packages {
   if (-not (Test-Path (Get-PythonExe))) { return $false }
-  return ((Invoke-Quiet (Get-PythonExe) @('-c', 'import numpy, scipy, faster_whisper')).code -eq 0)
+  return ((Invoke-Quiet (Get-PythonExe) @('-c', 'import numpy, scipy, faster_whisper, anthropic')).code -eq 0)
 }
 
 function Install-Packages {

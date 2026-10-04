@@ -678,6 +678,17 @@ function renderSettings() {
           bookendRow('outro', 'エンディング', '本編の後ろにつなぎます')),
         h('p', { class: 'hint' }, '別に用意した動画を、テロップ付きの元動画の前後につなぎます(切り抜きには付きません)。大きさ・コマ数・音声は自動でそろえます。')),
       st.do_transcribe && st.show_titles && h('div', { class: 'field' },
+        h('label', {}, '見出しの作り方'),
+        h('div', { class: 'switch', style: 'max-width:520px' },
+          h('button', { class: st.title_maker !== 'words' ? 'on' : '', onclick: () => setOption('title_maker', 'ai') }, 'AI に作ってもらう'),
+          h('button', { class: st.title_maker === 'words' ? 'on' : '', onclick: () => setOption('title_maker', 'words') }, '言葉を拾う(無料)')),
+        h('p', { class: 'hint' }, st.title_maker === 'words'
+          ? '話の中によく出てくる言葉を見出しにします(「クモ」「南極」のような短い言葉)。'
+          : S.hasKey
+            ? 'API キーがあるので、文字起こしのあと止まらずに Claude が見出しを作ります(35分の回で約20〜30円)。YouTube の概要欄も同時にできあがります。'
+            : '文字起こしが終わったところで一度止まります。依頼文を ChatGPT や claude.ai に貼り、返事を貼り付けて「続ける」を押すと、'
+              + 'その見出しで焼き込みます(作り直しは要りません)。YouTube の概要欄も同時にできあがります。')),
+      st.do_transcribe && st.show_titles && st.title_maker === 'words' && h('div', { class: 'field' },
         h('label', {}, '見出しの細かさ'),
         h('div', { class: 'switch', style: 'max-width:640px' },
           h('button', { class: st.title_scope === 'fine' ? 'on' : '', onclick: () => setOption('title_scope', 'fine') }, '話ごと'),
@@ -711,7 +722,10 @@ function renderRun() {
   const job = S.job || { state: 'idle' };
   const title = job.kind === 'reburn' ? '作り直しています…' : '処理しています…';
   let body;
-  if (job.state === 'running') {
+  const waiting = job.state === 'running' && job.wait === 'titles';
+  if (waiting) {
+    body = titlesWaitView(job);
+  } else if (job.state === 'running') {
     body = h('div', { class: 'card', 'data-job': '1', style: 'display:grid;gap:12px' },
       h('div', { class: 'spread' }, h('b', {}, title), h('span', { class: 'pct mono' }, `${job.percent}%`)),
       h('div', { class: 'progress' }, h('div', { style: `width:${job.percent}%` })),
@@ -746,10 +760,68 @@ function renderRun() {
   } else {
     body = h('div', { class: 'card' }, h('p', { class: 'muted' }, '実行中の処理はありません。'));
   }
-  $('view-run').replaceChildren(h('div', { class: 'page' },
+  $('view-run').replaceChildren(h('div', { class: 'page' + (waiting ? ' wide' : '') },
     h('div', {}, h('h1', {}, '処理'), h('p', { class: 'muted' }, '処理はこのPCの中だけで行い、動画を外部に送ることはありません。')),
     body));
   updateProgress();
+}
+
+/** 文字起こしが終わって止まっているときの画面。ここで作った見出しで焼き込む */
+function titlesWaitView(job) {
+  const go = guard(async (mode) => {
+    const d = CH.data;
+    if (mode === 'chapters') {
+      if (!d || !d.chapters.some((c) => c.title.trim())) return toast('見出しがありません', 'warn');
+      if (d.source === 'draft') {
+        const ok = await ask('下書きのまま続けますか?',
+          'まだ自動で拾った言葉の見出し(下書き)のままです。ChatGPT などで作った見出しを使うときは、先に「返事を貼り付け」をしてください。',
+          [{ label: 'このまま続ける', value: true }, { label: '戻る', value: false, primary: true }]);
+        if (!ok) return;
+      }
+      const long = longLabels(d.chapters);
+      if (long.length) {
+        const fix = await ask('左上の見出しが長すぎます',
+          `${long.map((c) => `「${c.label}」(${labelWidth(c.label)}文字)`).join('、')} は、画面の左上で2行になります。`
+          + `${LABEL_MAX}文字以内に直すと1行に収まります。`,
+          [{ label: '直す', value: true, primary: true }, { label: 'このまま進める', value: false }]);
+        if (fix) {
+          $('chapCard')?.querySelector('.clabel.long')?.focus();
+          return;
+        }
+      }
+    }
+    clearTimeout(CH.saveTimer);
+    await api('/api/titles-continue', {
+      project: job.project, mode,
+      ...(mode === 'chapters' ? { topics: d.topics, chapters: d.chapters, source: d.source } : {}),
+    });
+    toast(mode === 'chapters' ? 'この見出しで焼き込みを続けます' : '言葉を拾う方式で焼き込みを続けます');
+    poll();
+  });
+  const stop = guard(async () => {
+    const yes = await ask('処理を中止しますか?', '文字起こしの結果は保存されています。',
+      [{ label: '中止する', value: true, danger: true }, { label: '続ける', value: false }]);
+    if (yes) await api('/api/cancel', {});
+  });
+  return h('div', { style: 'display:grid;gap:14px' },
+    h('div', { class: 'card', style: 'display:grid;gap:10px' },
+      h('div', { class: 'spread' },
+        h('b', {}, '文字起こしが終わりました。見出しを決めてから焼き込みます'),
+        h('span', { class: 'chip review' }, '一時停止中')),
+      h('p', { class: 'muted small' }, '画面の左上に出す見出しと、YouTube の概要欄を、ここで一緒に作ります。'
+        + '焼き込む前に決めるので、あとで作り直す必要がありません。'),
+      job.wait_note && h('div', { class: 'notice warn' }, job.wait_note),
+      h('ol', { class: 'waitsteps' },
+        h('li', {}, S.hasKey ? '「AI で作る」を押す(または「依頼文をコピー」して ChatGPT や claude.ai に貼って送る)'
+          : '「依頼文をコピー」を押して、ChatGPT や claude.ai に貼って送る'),
+        !S.hasKey && h('li', {}, '返事が来たら、まるごとコピーして「返事を貼り付け」'),
+        h('li', {}, '見出しを確かめて、いちばん下の「この見出しで続ける」'))),
+    chaptersCard({ name: job.project }),
+    h('div', { class: 'card waitgo' },
+      h('button', { class: 'primary big', onclick: () => go('chapters') }, 'この見出しで続ける ▶'),
+      h('button', { onclick: () => go('words') }, '言葉を拾う方式で続ける'),
+      h('span', { style: 'flex:1' }),
+      h('button', { class: 'danger', onclick: stop }, '中止')));
 }
 
 function updateProgress() {
@@ -969,6 +1041,7 @@ function renderReview() {
   const changedCount = S.edit.segs.filter((s, i) => segChanged(i)).length;
   const busy = S.job?.state === 'running';
   const shift = S.edit.shift || 0;
+  const lead = p.lead || 0;     // できあがりの動画では、本編がオープニングの長さだけうしろにある
   const summary = [p.settings.do_transcribe && 'テロップ', p.settings.do_clip && `切り抜き(${p.settings.orientation === 'vertical' ? '縦' : '横'})`].filter(Boolean).join('・');
 
   reviewEditor = p.has_captioned ? captionEditor({
@@ -995,7 +1068,7 @@ function renderReview() {
   const playMain = (seg) => {
     document.querySelectorAll('.line.playing').forEach((r) => r.classList.remove('playing'));
     document.querySelector(`.line[data-line="${S.edit.segs.indexOf(seg)}"]`)?.classList.add('playing');
-    playIn(video, seg.start + shift, seg.end + shift);
+    playIn(video, seg.start + shift + lead, seg.end + shift + lead);
   };
   const lines = p.has_captioned ? h('div', { class: 'lines' }, S.edit.segs.map((s, i) => lineRow(i, playMain))) : null;
 
@@ -1003,8 +1076,10 @@ function renderReview() {
   const titlesCard = h('div', { class: 'card', style: 'display:grid;gap:12px' },
     h('div', { class: 'card-head' },
       h('div', {},
-        h('h3', {}, '話題の見出し(画面の左上)'),
-        h('p', { class: 'muted small' }, 'いま何の話かを自動で付けています。おかしいものはここで直せます(空にするとその区間は出ません)。')),
+        h('h3', {}, '話題の見出し(画面の左上)', p.titles_by === 'ai' && h('span', { class: 'chip auto', style: 'margin-left:8px' }, 'AI で作成')),
+        h('p', { class: 'muted small' }, 'いま何の話かを自動で付けています。おかしいものはここで直せます(空にするとその区間は出ません)。'
+          + ' 下の「YouTube の概要欄」で作った見出しを、ここに使うこともできます。'),
+          p.title_note && h('div', { class: 'notice warn', style: 'margin-top:8px' }, p.title_note)),
       h('label', { class: 'check' },
         h('input', {
           type: 'checkbox', checked: S.edit.showTitles,
@@ -1015,7 +1090,7 @@ function renderReview() {
           h('div', { class: 'linetop' },
             h('button', {
               class: 't', title: 'この箇所を再生',
-              onclick: () => playIn(video, t.start + shift, Math.min(t.start + shift + 6, t.end + shift)),
+              onclick: () => playIn(video, t.start + shift + lead, Math.min(t.start + shift + 6, t.end + shift) + lead),
             }, `▶ ${fmtClock(t.start + shift)}〜${fmtClock(t.end + shift)}`),
             h('input', {
               value: t.text, placeholder: '(空にすると出しません)', disabled: !S.edit.showTitles,
@@ -1066,6 +1141,7 @@ function renderReview() {
         !p.can_fix && h('span', { class: 'bad-text small' }, '作業用の動画が見つからないため作り直せません'),
         h('button', { class: 'primary big', disabled: busy || !p.can_fix, onclick: guard(startReburn) }, 'この内容で作り直す ▶'))),
     p.has_captioned && p.settings.do_transcribe && titlesCard,
+    p.segments?.length > 0 && chaptersCard(p),
     clips.length > 0 && h('div', { class: 'card', style: 'display:grid;gap:14px' },
       h('div', {},
         h('h3', {}, '切り抜き候補'),
@@ -1114,6 +1190,447 @@ function renderReview() {
   reviewEditor?.update();
 }
 
+/* ---------- YouTube の概要欄(チャプター) ---------- */
+
+// 作り方は「下書き / AI / 貼り付け」の3つ。どれで作っても、ここで直してから概要欄に貼る。
+// 時刻は、できあがった動画(オープニングをつないだ後)の時刻。
+const CH = { project: '', data: null, error: '', busy: '', saveTimer: 0 };
+const CH_SOURCE = { draft: ['下書き', 'still'], ai: ['AI で作成', 'auto'], paste: ['貼り付け', 'auto'], edit: ['手で修正', 'manual'] };
+const CH_MIN_GAP = 10;
+
+function hms(sec) {
+  const s = Math.max(0, Math.round(sec));
+  const p2 = (n) => String(n).padStart(2, '0');
+  return `${p2(Math.floor(s / 3600))}:${p2(Math.floor(s / 60) % 60)}:${p2(s % 60)}`;
+}
+
+function parseHms(text) {
+  const parts = String(text || '').trim().replace(/：/g, ':').split(':');
+  if (!parts.length || parts.length > 3 || !parts.every((x) => /^\d+$/.test(x.trim()))) return null;
+  return parts.reduce((acc, x) => acc * 60 + Number(x), 0);
+}
+
+function chapterText(d) {
+  const parts = [];
+  const topics = d.topics.filter((t) => t.trim());
+  if (topics.length) parts.push('▼主なトピック\n' + topics.join(' / '));
+  const rows = d.chapters.filter((c) => c.title.trim());
+  if (rows.length) parts.push(rows.map((c) => `${hms(c.start)} - ${c.title.trim()}`).join('\n'));
+  return parts.join('\n\n');
+}
+
+// 左上の見出しは、この長さ(全角)までなら焼き込んだときに必ず1行に収まる
+const LABEL_MAX = 16;
+
+function labelWidth(text) {
+  let w = 0;
+  for (const ch of String(text || '')) {
+    const cp = ch.codePointAt(0);
+    w += cp < 0x2000 || (cp >= 0xFF61 && cp <= 0xFF9F) ? 0.5 : 1;
+  }
+  return w;
+}
+
+const labelTooLong = (text) => labelWidth(text) > LABEL_MAX;
+
+/** 長すぎる左上の見出し(本編の行だけ) */
+const longLabels = (chapters) => chapters.filter((c) => (c.kind || 'body') === 'body' && labelTooLong(c.label));
+
+function chapterProblems(chapters) {
+  const out = [];
+  if (chapters.length < 3) out.push(`YouTube は見出しが3つ以上ないとチャプターにしません(いま${chapters.length}つ)。`);
+  if (chapters.length && chapters[0].start !== 0) out.push('1つ目の見出しは 00:00:00 にしてください。');
+  chapters.forEach((c, i) => {
+    const next = chapters[i + 1];
+    if (next && next.start <= c.start) out.push(`「${next.title || '(空)'}」の時刻が、前の見出しより前になっています。`);
+    else if (next && next.start - c.start < CH_MIN_GAP) out.push(`「${c.title || '(空)'}」が10秒より短くなっています。`);
+  });
+  if (chapters.some((c) => !c.title.trim())) out.push('見出しが空の行があります。');
+  for (const c of longLabels(chapters)) {
+    out.push(`左上の見出し「${c.label}」が長すぎます(${labelWidth(c.label)}文字)。${LABEL_MAX}文字以内に直すと1行に収まります。`);
+  }
+  return out;
+}
+
+async function copyText(text) {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    // スマホから(暗号化していない通信で)開いているときは、こちらの方法でしか写せない
+    const area = h('textarea', { style: 'position:fixed;left:-9999px;top:0' });
+    area.value = text;
+    document.body.append(area);
+    area.select();
+    let ok = false;
+    try { ok = document.execCommand('copy'); } catch { ok = false; }
+    area.remove();
+    return ok;
+  }
+}
+
+/** 自動で写せなかったときに、選んで写せるように見せる */
+function showCopyBox(title, text) {
+  const modal = $('modal');
+  const area = h('textarea', { class: 'mono', rows: 12, readonly: true, style: 'width:100%' });
+  area.value = text;
+  const close = () => { modal.hidden = true; modal.replaceChildren(); };
+  modal.replaceChildren(h('div', { class: 'mbox wide', role: 'dialog', 'aria-modal': 'true' },
+    h('h3', {}, title),
+    h('p', { class: 'muted small' }, '自動でコピーできませんでした。下の文を長押し(または Ctrl+A)で選んでコピーしてください。'),
+    area,
+    h('div', { class: 'mbtns' }, h('button', { class: 'primary', onclick: close }, '閉じる'))));
+  modal.hidden = false;
+  area.focus();
+  area.select();
+}
+
+async function loadChapters(name) {
+  CH.project = name;
+  CH.data = null;
+  CH.error = '';
+  try {
+    CH.data = await api('/api/chapters', { project: name });
+  } catch (e) {
+    CH.error = e.message;
+  }
+  if (CH.project === name) renderChapters();     // 結果を開く前(見出し待ち)でも描く
+}
+
+function setChapters(data) {
+  CH.data = data;
+  renderChapters();
+}
+
+/** 手で直したら、少し待ってから保存する(その間も、貼る文と注意はすぐ変える) */
+function chapterEdited() {
+  const d = CH.data;
+  d.source = 'edit';
+  refreshChapterOutput();
+  clearTimeout(CH.saveTimer);
+  const name = CH.project;
+  CH.saveTimer = setTimeout(() => {
+    api('/api/chapters/save', { project: name, topics: d.topics, chapters: d.chapters })
+      .then((saved) => { if (CH.project === name) { d.problems = saved.problems; } })
+      .catch(() => {});
+  }, 700);
+}
+
+function refreshChapterOutput() {
+  const box = $('chapCard');
+  if (!box || !CH.data) return;
+  const out = box.querySelector('.chapout textarea');
+  if (out) out.value = chapterText(CH.data);
+  const probs = chapterProblems(CH.data.chapters);
+  box.querySelector('.chapprobs')?.replaceChildren(...(probs.length
+    ? [h('div', { class: 'notice warn' }, h('div', {}, probs.map((t) => h('div', {}, t))))] : []));
+  const [label, kind] = CH_SOURCE[CH.data.source] || CH_SOURCE.edit;
+  const chip = box.querySelector('.chapsource');
+  if (chip) { chip.className = `chip ${kind} chapsource`; chip.textContent = label; }
+}
+
+function seekChapter(sec) {
+  const video = $('fixVideo');
+  if (!video) return;
+  stopAt = null;
+  video.currentTime = sec;
+  video.play().catch(() => {});
+}
+
+async function makeChaptersWithAi() {
+  const d = CH.data;
+  if (d.source === 'edit' || d.source === 'paste' || d.source === 'ai') {
+    const go = await ask('AI で作り直しますか?', '今の見出しは、AI が作ったものに置き換わります。',
+      [{ label: '作り直す', value: true, primary: true }, { label: 'やめる', value: false }]);
+    if (!go) return;
+  }
+  const name = CH.project;
+  CH.busy = 'AI が見出しを考えています(1分ほどかかります)…';
+  renderChapters();
+  try {
+    const data = await api('/api/chapters/ai', { project: name });
+    if (CH.project === name) { CH.data = data; toast('AI で見出しを作りました。おかしい所は直してから使ってください。', 'ok'); }
+  } finally {
+    CH.busy = '';
+    if (CH.project === name) renderChapters();
+  }
+}
+
+// これより長い依頼文は、無料版の ChatGPT などでは途中までしか読まれないおそれがある
+// (35分の回で約1.1万字。無料版が一度に読める量は2万字台と見て、余裕を持たせた目安)
+const LONG_PROMPT = 18000;
+const CHAT_SITES = { chatgpt: 'https://chatgpt.com/', claude: 'https://claude.ai/new' };
+
+async function copyChapterPrompt() {
+  const { text } = await api('/api/chapters/prompt', { project: CH.project });
+  if (!(await copyText(text))) return showCopyBox('AI への依頼文', text);
+  const long = text.length > LONG_PROMPT
+    ? `\n\n※ 依頼文が長めです(約${Math.round(text.length / 1000)}千字)。無料版の ChatGPT などでは途中までしか読まれず、`
+      + '後半の見出しが抜けることがあります。抜けたときは、有料版や「Thinking」系のモデルを使うか、'
+      + 'Claude(claude.ai、または「AI で作る」)をお使いください。'
+    : '';
+  const next = await ask('依頼文をコピーしました',
+    '1. ChatGPT や claude.ai を開いて、新しいチャットに貼り付けて送ります\n'
+    + '2. 返事が来たら、その文をまるごとコピーします\n'
+    + '3. ここに戻って「返事を貼り付け」を押します' + long,
+    [{ label: 'ChatGPT を開く', value: 'chatgpt', primary: true },
+     { label: 'claude.ai を開く', value: 'claude' },
+     { label: '閉じる', value: null }]);
+  if (CHAT_SITES[next]) window.open(CHAT_SITES[next], '_blank', 'noopener');
+}
+
+function pasteChapterReply() {
+  const modal = $('modal');
+  const area = h('textarea', { rows: 12, placeholder: '▼主なトピック\n…\n\n0:00 - 見出し\n2:51 - 見出し', style: 'width:100%' });
+  const message = h('p', { class: 'bad-text small' });
+  const close = () => { modal.hidden = true; modal.replaceChildren(); };
+  const load = guard(async () => {
+    message.textContent = '';
+    try {
+      const data = await api('/api/chapters/paste', { project: CH.project, text: area.value });
+      close();
+      setChapters(data);
+      toast(`${data.chapters.length}個の見出しを読み込みました`, 'ok');
+    } catch (e) {
+      message.textContent = e.message;
+    }
+  });
+  modal.replaceChildren(h('div', { class: 'mbox wide', role: 'dialog', 'aria-modal': 'true' },
+    h('h3', {}, 'AI の返事を貼り付け'),
+    h('p', { class: 'muted small' }, 'ChatGPT や claude.ai から返ってきた文を、そのまま貼り付けてください。前置きの文が混ざっていても、時刻つきの行だけを読み取ります。'),
+    area, message,
+    h('div', { class: 'mbtns' },
+      h('button', { class: 'outline', onclick: close }, 'やめる'),
+      h('button', { class: 'primary', onclick: load }, '読み込む'))));
+  modal.hidden = false;
+  area.focus();
+  // ChatGPT などでコピーしてきた返事が入っていれば、貼る手間を省く(読めないときは何もしない)
+  navigator.clipboard?.readText?.().then((clip) => {
+    if (!area.value && /\d{1,2}:\d{2}/.test(clip || '') && !clip.includes('--- 文字起こし ---')) {
+      area.value = clip;
+      message.textContent = '';
+      area.after(h('p', { class: 'hint pasted' }, 'コピーしてあった返事を入れました。よければ「読み込む」を押してください。'));
+    }
+  }).catch(() => {});
+}
+
+function chapterKeyDialog() {
+  const modal = $('modal');
+  const has = !!CH.data?.has_key;
+  const input = h('input', { type: 'password', autocomplete: 'off', placeholder: has ? '(登録済み。入れ直すときだけ入力)' : 'sk-ant-…', style: 'width:100%' });
+  const message = h('p', { class: 'bad-text small' });
+  const close = () => { modal.hidden = true; modal.replaceChildren(); };
+  const save = guard(async (value) => {
+    message.textContent = '';
+    try {
+      const r = await api('/api/apikey', { key: value });
+      close();
+      if (CH.data) CH.data.has_key = r.has_key;
+      S.hasKey = r.has_key;
+      renderChapters();
+      toast(r.has_key ? 'API キーを保存しました' : 'API キーを消しました', 'ok');
+    } catch (e) {
+      message.textContent = e.message;
+    }
+  });
+  modal.replaceChildren(h('div', { class: 'mbox', role: 'dialog', 'aria-modal': 'true' },
+    h('h3', {}, 'API キーの設定'),
+    h('p', {}, 'Claude の API キーを入れると、「AI で作る」ボタン1つで見出しを作れます。'),
+    h('ul', { class: 'muted small keynotes' },
+      h('li', {}, 'キーは Claude Console(console.anthropic.com)の「API Keys」で作れます。'),
+      h('li', {}, '使った分だけ料金がかかります(35分の回で1本あたり約20〜30円)。'),
+      h('li', {}, 'AI に送るのは文字起こしの文字だけです。動画や音声は送りません。'),
+      h('li', {}, 'キーはこの PC の中(data フォルダ)にだけ保存し、画面には表示しません。')),
+    input, message,
+    h('div', { class: 'mbtns' },
+      has && h('button', { class: 'danger', onclick: () => save('') }, 'キーを消す'),
+      h('button', { class: 'outline', onclick: close }, 'やめる'),
+      h('button', { class: 'primary', onclick: () => save(input.value) }, '保存'))));
+  modal.hidden = false;
+  input.focus();
+}
+
+const CH_KIND_NOTE = { intro: 'オープニングの動画', outro: 'エンディングの動画' };
+
+function chapterRow(c, i) {
+  const d = CH.data;
+  const kind = c.kind || 'body';
+  const bodyRows = d.chapters.filter((x) => (x.kind || 'body') === 'body');
+  const firstBody = bodyRows[0] === c;
+  // オープニング・エンディングの時刻は、つないだ動画の長さで決まる。本編の1つ目は本編の頭に固定
+  const locked = kind !== 'body' || firstBody;
+  const time = h('input', {
+    class: 'mono ctime', value: hms(c.start), inputmode: 'numeric', 'aria-label': '時刻', disabled: locked,
+    title: kind !== 'body' ? `${CH_KIND_NOTE[kind]}の時刻です(つないだ動画の長さで決まります)`
+      : firstBody ? '本編の始まりです' : '例: 2:51 / 00:02:51',
+    onchange: (e) => {
+      const sec = parseHms(e.target.value);
+      e.target.classList.toggle('bad', sec === null);
+      if (sec === null) return;
+      c.start = sec;
+      sortChapters(d);
+      chapterEdited();
+      renderChapters();
+    },
+  });
+  return h('div', { class: 'chapline' },
+    h('button', { class: 'ghost seek', title: 'この箇所から再生', onclick: () => seekChapter(c.start) }, '▶'),
+    time,
+    h('input', {
+      class: 'ctitle', value: c.title, placeholder: '見出し(概要欄)', 'aria-label': '見出し(概要欄)',
+      oninput: (e) => { c.title = e.target.value; chapterEdited(); },
+    }),
+    kind === 'body'
+      ? h('input', {
+        class: 'clabel' + (labelTooLong(c.label) ? ' long' : ''), value: c.label || '',
+        placeholder: '左上の見出し', 'aria-label': '左上の見出し',
+        title: `動画の左上に出す短い見出し(${LABEL_MAX}文字以内で1行に収まります)`,
+        oninput: (e) => {
+          c.label = e.target.value;
+          e.target.classList.toggle('long', labelTooLong(c.label));
+          chapterEdited();
+        },
+      })
+      : h('span', { class: 'clabel cnone', title: '左上の見出しは本編だけに出します' }, CH_KIND_NOTE[kind]),
+    h('button', {
+      class: 'ghost del', title: kind === 'body' ? 'この見出しを消す' : `${CH_KIND_NOTE[kind]}をチャプターにしない`,
+      disabled: kind === 'body' && bodyRows.length <= 1,
+      onclick: () => { d.chapters.splice(i, 1); chapterEdited(); renderChapters(); },
+    }, '×'));
+}
+
+/** 時刻の順に並べる(オープニングはいつも先頭、エンディングはいつも最後) */
+function sortChapters(d) {
+  const order = { intro: 0, body: 1, outro: 2 };
+  d.chapters.sort((a, b) => (order[a.kind || 'body'] - order[b.kind || 'body']) || (a.start - b.start));
+}
+
+function addChapterRow() {
+  const d = CH.data;
+  const video = $('fixVideo');
+  const body = d.chapters.filter((c) => (c.kind || 'body') === 'body');
+  const outro = d.chapters.find((c) => c.kind === 'outro');
+  const last = body[body.length - 1];
+  // 再生中ならその位置、そうでなければ最後の見出しの1分後に足す(エンディングより前)
+  let at = video && video.currentTime > 0 ? Math.floor(video.currentTime) : (last ? last.start + 60 : 0);
+  if (outro && at >= outro.start - CH_MIN_GAP) at = Math.max((last?.start ?? 0) + CH_MIN_GAP, outro.start - CH_MIN_GAP * 3);
+  while (d.chapters.some((c) => Math.abs(c.start - at) < CH_MIN_GAP)) at += CH_MIN_GAP;
+  const added = { start: d.chapters.length ? at : 0, title: '', label: '', kind: 'body' };
+  d.chapters.push(added);
+  sortChapters(d);
+  chapterEdited();
+  renderChapters();
+  const idx = d.chapters.indexOf(added);
+  $('chapCard')?.querySelectorAll('.chapline')[idx]?.querySelector('.ctitle')?.focus();
+}
+
+/** 概要欄の見出しを、左上に焼き込む見出しにする(反映は「この内容で作り直す」) */
+async function useChaptersForTitles() {
+  const p = S.project, d = CH.data;
+  const rows = d.chapters.filter((c) => (c.kind || 'body') === 'body' && c.title.trim());
+  if (!rows.length) return toast('見出しがありません', 'warn');
+  const long = longLabels(d.chapters);
+  if (long.length) {
+    const fix = await ask('左上の見出しが長すぎます',
+      `${long.map((c) => `「${c.label}」(${labelWidth(c.label)}文字)`).join('、')} は、画面の左上で2行になります。`
+      + `${LABEL_MAX}文字以内に直すと1行に収まります。`,
+      [{ label: '直す', value: true, primary: true }, { label: 'このまま進める', value: false }]);
+    if (fix) {
+      $('chapCard')?.querySelector('.clabel.long')?.focus();
+      return;
+    }
+  }
+
+  const go = await ask('左上の見出しを置き換えますか?',
+    `今の「話題の見出し」を、ここの「左上の見出し」(${rows.length}個)に置き換えます。`
+    + '動画に反映するには、このあと「この内容で作り直す」を押してください。',
+    [{ label: '置き換える', value: true, primary: true }, { label: 'やめる', value: false }]);
+  if (!go) return;
+  const offset = d.offset || 0, bodyEnd = p.duration || (p.segments.at(-1)?.end ?? 0);
+  S.edit.titles = rows.map((c, i) => ({
+    start: Math.max(0, c.start - offset),
+    end: Math.min(bodyEnd, rows[i + 1] ? rows[i + 1].start - offset : bodyEnd),
+    text: (c.label || '').trim() || c.title.trim(),
+  })).filter((t) => t.end - t.start >= 1);
+  S.edit.showTitles = true;
+  saveDraftSoon();
+  renderReview();
+  toast('左上の見出しを置き換えました。「この内容で作り直す」で動画に反映されます。', 'ok');
+}
+
+function chaptersCard(p) {
+  const card = h('div', { class: 'card', id: 'chapCard', style: 'display:grid;gap:12px' });
+  if (CH.project !== p.name) loadChapters(p.name);
+  setTimeout(renderChapters);
+  return card;
+}
+
+function renderChapters() {
+  const card = $('chapCard');
+  if (!card) return;
+  const d = CH.data;
+  const head = h('div', { class: 'card-head' },
+    h('div', {},
+      h('h3', {}, 'YouTube の概要欄'),
+      h('p', { class: 'muted small' }, '時刻つきの見出し(チャプター)と主なトピックを作ります。「概要欄に貼る文」をコピーして、YouTube の概要欄に貼ってください。')),
+    d && h('span', { class: 'chapsource' }));
+  if (!d) {
+    card.replaceChildren(head, CH.error ? h('div', { class: 'empty' }, CH.error) : h('div', { class: 'empty' }, '読み込んでいます…'));
+    return;
+  }
+  const busy = !!CH.busy;
+  const actions = h('div', { class: 'chapactions' },
+    h('button', { class: 'primary', disabled: busy, onclick: guard(copyChapterPrompt) }, '1. 依頼文をコピー'),
+    h('button', { class: 'primary', disabled: busy, onclick: pasteChapterReply }, '2. 返事を貼り付け'),
+    d.has_key && h('button', { disabled: busy, onclick: guard(makeChaptersWithAi) }, 'AI で作る(API)'),
+    h('span', { style: 'flex:1' }),
+    d.source !== 'draft' && h('button', {
+      class: 'ghost', disabled: busy,
+      onclick: guard(async () => {
+        const go = await ask('下書きに戻しますか?', '今の見出しを消して、話題の見出しから作った下書きに戻します。',
+          [{ label: '戻す', value: true, danger: true }, { label: 'やめる', value: false }]);
+        if (go) setChapters(await api('/api/chapters/reset', { project: CH.project }));
+      }),
+    }, '下書きに戻す'),
+    h('button', { class: 'ghost small', disabled: busy, onclick: chapterKeyDialog }, d.has_key ? 'API キー' : 'API を使う'));
+  const note = h('p', { class: 'hint' },
+    '「依頼文をコピー」して ChatGPT や claude.ai に貼って送り、返ってきた文を「返事を貼り付け」で読み込みます。'
+    + (d.has_key ? ' 「AI で作る(API)」は、文字起こしの文字だけを Claude に送ります(35分の回で約20〜30円)。' : ''));
+
+  const topics = h('input', {
+    value: d.topics.join(' / '), placeholder: 'トピック / トピック / トピック', 'aria-label': '主なトピック',
+    oninput: (e) => { d.topics = e.target.value.split(/\s*[/／]\s*/).map((t) => t.trim()).filter(Boolean); chapterEdited(); },
+  });
+  const editor = h('div', { class: 'chapedit' },
+    h('label', { class: 'chaplabel' }, '主なトピック(「 / 」で区切る)'), topics,
+    h('div', { class: 'chaphead' },
+      h('span', {}), h('span', {}, '時刻'), h('span', {}, `見出し(${d.chapters.length}個)`), h('span', {}, '左上の見出し'), h('span', {})),
+    h('div', { class: 'chaplines' }, d.chapters.map(chapterRow)),
+    h('button', { class: 'ghost addrow', onclick: addChapterRow }, '＋ 見出しを足す'),
+    (d.offset > 0 || d.outro > 0) && h('p', { class: 'hint' },
+      'オープニング・エンディングをつないだ、できあがりの動画の時刻です。あとから付け替えても、時刻は自動でそろえます。'),
+    S.step === 'review' && S.project?.has_captioned && S.project.name === CH.project && h('div', { class: 'useforoverlay' },
+      h('button', { disabled: busy, onclick: useChaptersForTitles }, '左上の見出しに使う'),
+      h('span', { class: 'hint' }, '「左上の見出し」の列を、動画の左上に出す見出しにします。')));
+  const output = h('div', { class: 'chapout' },
+    h('div', { class: 'spread' },
+      h('label', { class: 'chaplabel' }, '概要欄に貼る文'),
+      h('button', {
+        class: 'primary', onclick: guard(async () => {
+          const text = chapterText(d);
+          if (await copyText(text)) toast('コピーしました。YouTube の概要欄に貼り付けてください。', 'ok');
+          else showCopyBox('概要欄に貼る文', text);
+        }),
+      }, 'コピー')),
+    h('textarea', { class: 'mono', rows: 16, readonly: true }),
+    h('div', { class: 'chapprobs' }));
+
+  card.replaceChildren(...[head, actions, note,
+    busy && h('div', { class: 'notice' }, h('span', { class: 'spinner' }), CH.busy),
+    h('div', { class: 'chapgrid' + (busy ? ' busy' : '') }, editor, output)].filter(Boolean));
+  refreshChapterOutput();
+}
+
 async function startReburn() {
   const p = S.project;
   const targets = [S.edit.main && 'main', S.edit.clip && p.clips.length && 'clip'].filter(Boolean);
@@ -1144,11 +1661,13 @@ async function poll() {
     return;
   }
   const before = S.job?.state;
+  const beforeWait = S.job?.wait || '';
   S.job = st.job;
   S.recent = st.recent;
   S.results = st.results;
   if (!S.fonts.length) S.fonts = st.fonts;
   if (!S.settings) S.settings = st.settings;
+  S.hasKey = !!st.has_key;
 
   if (st.pending) {
     useVideoPath(st.pending, `「${basename(st.pending)}」を受け取りました。内容を確認して「次へ」に進んでください。`).catch((e) => toast(e.message, 'bad'));
@@ -1156,7 +1675,9 @@ async function poll() {
 
   const now = st.job.state;
   if (now === 'running') {
-    if (S.step === 'run' && before === 'running') updateProgress();
+    const waitChanged = (st.job.wait || '') !== beforeWait;
+    if (waitChanged && st.job.wait === 'titles' && S.step !== 'run') toast('文字起こしが終わりました。「3 処理」で見出しを決めてください。');
+    if (S.step === 'run' && before === 'running' && !waitChanged) updateProgress();
     else if (S.step === 'run') renderRun();
     else { renderHeader(); renderSteps(); }
   } else if (before === 'running') {
@@ -1642,6 +2163,7 @@ async function boot() {
   try {
     const st = await api('/api/state');
     S.settings = st.settings;
+    S.hasKey = !!st.has_key;
     S.fonts = st.fonts;
     S.recent = st.recent;
     S.results = st.results;
