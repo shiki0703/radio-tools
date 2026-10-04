@@ -507,7 +507,9 @@ function mediaWaitMessage(path) {
     ? 'スマホで見られるように、'
     : S.light && info.kind === 'video'
       ? 'なめらかに再生できるように、'
-      : `${basename(path)} はそのまま再生できないため、`;
+      : info.kind === 'audio' && info.codec === 'mp3'
+        ? '音と映像の位置を正確に合わせるため、'
+        : `${basename(path)} はそのまま再生できないため、`;
   const hint = !FROM_PHONE && S.light && info.kind === 'video'
     ? '\n(元の画質ですぐ見るときは「なめらか優先」を外してください。重くてカクつくことがあります)' : '';
   return `${why}プレビュー用の軽量版を作成中… ${Math.floor((job?.progress || 0) * 100)}%${eta}(初回のみ)${hint}`;
@@ -797,6 +799,7 @@ async function startAnalyze() {
   await inspect([...p.audios, ...p.videos]);
   const r = await api('/api/analyze', { audios: p.audios, videos: p.videos, previous: p.episodes });
   watchJob(r.job, 'analyze');
+  for (const a of p.audios) if (S.media[a]?.kind === 'audio' && !S.media[a].playable && !S.media[a].proxy_ready) startProxy(a);
   if (S.light || FROM_PHONE) {
     for (const v of p.videos) if (S.media[v]?.kind === 'video' && !S.media[v].proxy_ready) startProxy(v, true);
   }

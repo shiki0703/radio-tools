@@ -1,10 +1,8 @@
 {
-  "version": "2026.10.04.2",
-  "released": "2026-10-04",
+  "version": "2026.10.05",
+  "released": "2026-10-05",
   "notes": [
-    "Radio Sync の確認画面で、映像がカクついて音とずれて見える・再生できない問題を直しました(プレビューは軽量版で再生します)",
-    "プレビュー用の軽量版は、照合を始めたときから作り始めます(できるまでは進み具合を表示します)",
-    "確認画面にも「なめらか優先」の切り替えを置きました(外すと元の画質で再生します)"
+    "Radio Sync のプレビューで、ラジオ音声(mp3)と映像が1秒以上ずれることがある問題を直しました"
   ],
   "check": "https://raw.githubusercontent.com/shiki0703/radio-tools/main/launcher/version.json",
   "download": "https://codeload.github.com/shiki0703/radio-tools/zip/refs/heads/main"

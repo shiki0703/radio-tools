@@ -316,7 +316,11 @@ def inspect(path):
         # The page plays HEVC directly when the browser supports it, and falls back to a proxy.
         info['hevc'] = bool(containers & {'mp4', 'mov'}) and v.get('codec_name') == 'hevc'
     elif kind == 'audio':
-        info['playable'] = bool(containers & BROWSER_AUDIO_CONTAINERS) and acodec in BROWSER_AUDIO_CODECS
+        # mp3 は、ブラウザで再生位置を飛ばすと、実際に鳴る位置が1秒以上ずれることがある(可変ビットレートのとき)。
+        # 映像はツールの思う位置に合わせるので、音だけがずれて聞こえる。プレビューでは位置が正確な AAC の控えを使う
+        info['playable'] = (bool(containers & BROWSER_AUDIO_CONTAINERS) and acodec in BROWSER_AUDIO_CODECS
+                            and acodec != 'mp3')
+        info['codec'] = acodec
     if kind in ('video', 'audio'):
         proxy = proxy_path(path, kind)
         info.update(proxy_path=str(proxy), proxy_ready=proxy.is_file())
