@@ -620,3 +620,17 @@ details.adv summary { cursor: pointer; font-size: 13px; font-weight: 600; }
 .pasted { color: var(--accent); }
 .chapline .clabel.long { border-color: var(--danger); background: #fdecec; }
 
+/* ロゴ */
+.logo-panel { display: grid; gap: 10px; }
+.logo-panel .logo-on { margin-left: 0; min-width: 130px; color: var(--text); }
+.logo-body { display: grid; gap: 8px; }
+.logo-body[hidden] { display: none; }
+.logo-stage { position: relative; width: 100%; max-width: 640px; aspect-ratio: 16 / 9; overflow: hidden; border-radius: 10px;
+  background: #17212b center / cover no-repeat; touch-action: none; }
+.logo-box { position: absolute; height: auto; cursor: grab; user-select: none; -webkit-user-drag: none;
+  outline: 1px dashed rgba(255, 255, 255, .9); outline-offset: 2px; }
+.logo-box:active { cursor: grabbing; }
+.logo-box.off { opacity: .4; }
+.logo-size { flex: 1; min-width: 140px; max-width: 260px; }
+.logo-panel .corners { display: flex; gap: 4px; flex-wrap: wrap; }
+.cap-logo { position: absolute; height: auto; pointer-events: none; }

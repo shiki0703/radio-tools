@@ -159,6 +159,7 @@ const S = {
   jobs: {},
   outdir: '',
   plan: null,
+  ending: null,      // 最後に使ったエンディング曲(まだ決めていないプロジェクトで使う)
   exported: null,
   cutEp: 0,          // カット画面で見ている話
   cutAt: 0,          // カット画面で選んでいる区切りの位置(秒)
@@ -3852,6 +3853,7 @@ function renderExport() {
         check(p.still ? 'ok' : 'warn',
           p.still ? `映像がない所の画像:${basename(p.still)}` : '映像がない所の画像は未設定です(濃い青灰色の背景になります)',
           p.still ? null : h('button', { onclick: () => setStep('files') }, '設定する')),
+        plan && plan.ending > 0 && check('ok', `最後にエンディング曲(${basename(endingOf().path)}、${Math.round(plan.ending * 10) / 10}秒)を付けます`),
         overruns.length > 0 && check('bad',
           `動画の長さを超えた位置を指定している区間が ${overruns.length} か所あります。直さないと書き出せません。`,
           h('button', { onclick: () => { setStep('review'); selectSegment(...overruns[0]); } }, '直す')),
@@ -3866,6 +3868,7 @@ function renderExport() {
       }, `${q.label}(${q.note})`))),
       h('p', { class: 'muted small' }, QUALITY.find((q) => q.key === qualityOf()).detail
         + (plan && plan.sizes ? ` 目安の大きさ:${fmtGB(plan.sizes.reduce((a, b) => a + b, 0))}` : ''))),
+    endingCard(),
     h('div', { class: 'card', style: 'display:grid;gap:12px' },
       h('h3', {}, '書き出し先'),
       h('div', { class: 'row' },
@@ -3891,6 +3894,50 @@ function renderExport() {
             disabled: !plan || missing.length > 0 || overruns.length > 0 || !plan.items.length,
             onclick: guard(startExport),
           }, '▶ 書き出しを開始'))));
+}
+
+/* ---------- エンディング曲 ----------
+   プロジェクトの ending({on, path})に持つ。まだ決めていないプロジェクトでは、最後に使ったもの(S.ending)を使う。 */
+
+const endingOf = () => ({ on: false, path: '', ...(S.ending || {}), ...(S.project.ending || {}) });
+
+function setEnding(change) {
+  const next = { ...endingOf(), ...change };
+  commit(() => { S.project.ending = next; });
+  S.ending = next;
+  api('/api/ending', next).catch(() => {});      // 次の新しいプロジェクトでも使う
+  refreshPlan();
+  if (S.step === 'export') renderExport();
+}
+
+async function pickMusic() {
+  const { paths } = await api('/api/pick', { kind: 'music' });
+  if (!paths.length) return;
+  await inspect(paths);
+  const info = S.media[paths[0]];
+  if (info && info.kind !== 'audio' && info.kind !== 'video') return toast('音の入ったファイルを選んでください', 'bad');
+  setEnding({ path: paths[0], on: true });
+}
+
+function endingCard() {
+  const ending = endingOf();
+  const busy = running('export');
+  const song = ending.path ? S.media[ending.path] : null;
+  const seconds = song?.duration ? `${Math.round(song.duration * 10) / 10}秒` : '';
+  return h('div', { class: 'card ending', style: 'display:grid;gap:12px' },
+    h('h3', {}, 'エンディング曲'),
+    h('div', { class: 'row' },
+      h('label', { class: 'check' }, h('input', {
+        type: 'checkbox', checked: ending.on && !!ending.path, disabled: busy || !ending.path,
+        onchange: (ev) => setEnding({ on: ev.target.checked }),
+      }), '最後にエンディング曲を流す'),
+      h('div', { class: 'pathbox', title: ending.path }, ending.path ? basename(ending.path) + (seconds ? `(${seconds})` : '') : '曲が選ばれていません'),
+      h('button', { onclick: guard(pickMusic), disabled: busy }, ending.path ? '変更' : '曲を選ぶ')),
+    ending.path && h('audio', { class: 'ending-audio', controls: true, preload: 'none', src: mediaUrl(ending.path) }),
+    h('p', { class: 'muted small' },
+      `話の後ろに、曲の長さ${seconds ? `(${seconds})` : ''}だけ映像を足して曲を流します。そのあいだはカメラの映像を音なしで流し続けます`
+      + '(カメラが先に止まっていれば最後の場面で止め、最後が静止画ならその画像のまま)。分けて書き出すときは、それぞれのファイルに付きます。'
+      + 'ロゴは動画クリッパーで重ねます。'));
 }
 
 async function pickOutdir() {
@@ -4491,7 +4538,8 @@ async function useProject(project, path, dirty) {
   if (p.still && !p.stills.includes(p.still)) p.stills.push(p.still);
   await inspect([...p.audios, ...p.videos, p.still, ...p.stills, ...p.episodes.flatMap((e) => e.segments.map((x) => x.still)),
     ...p.episodes.map((e) => e.audio),
-    ...p.episodes.flatMap((e) => e.segments.map((s) => s.video))]).catch(() => {});
+    ...p.episodes.flatMap((e) => e.segments.map((s) => s.video)),
+    endingOf().path]).catch(() => {});
   S.step = p.episodes.length ? 'review' : 'files';
   renderAll();
   if (S.step === 'review') {
@@ -4587,6 +4635,8 @@ async function boot() {
   } catch (e) {
     return showError(e.message);
   }
+  S.ending = st.ending || null;
+  inspect([endingOf().path]).catch(() => {});
   const saved = st.autosave;
   const p = saved?.project;
   S.syncedAt = saved?.saved_at || 0;

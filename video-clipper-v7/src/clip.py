@@ -5,6 +5,7 @@
 
 horizontal … テロップあり: 元動画から切り出して切り抜き用スタイルで焼き込み
              テロップなし: テロップ付き(または元)動画から無劣化コピー
+             (ロゴを重ねるときは、元動画から切り出して重ねる)
 vertical   … 9:16の黒キャンバス(1080x1920)の中央に横動画をそのまま配置し、
              動画全体が見える形にする(クロップしない)。
              テロップは黒帯の上にも置ける。
@@ -12,8 +13,9 @@ vertical   … 9:16の黒キャンバス(1080x1920)の中央に横動画をそ�
 import subprocess
 from pathlib import Path
 
-from src.preprocess import quality_args, check_cancelled
+from src.preprocess import quality_args, check_cancelled, probe
 from src.subtitle import write_srt, build_style, build_title_style, escape_srt_path
+from src.logo import overlay_graph
 
 # 縦動画の出力キャンバス
 V_WIDTH, V_HEIGHT = 1080, 1920
@@ -35,7 +37,7 @@ def _clip_segments(segments: list, start: float, end: float) -> list:
 def cut_clips(captioned_video: str, highlights: list, out_dir: str,
               orientation: str = "horizontal", on_progress=None,
               work_video: str = None, segments: list = None,
-              style: dict = None, hq: bool = False, titles: list = None):
+              style: dict = None, hq: bool = False, titles: list = None, logo: dict = None):
     """
     盛り上がり候補を切り抜いて clip_1.mp4 〜 clip_5.mp4 を出力。
 
@@ -44,10 +46,13 @@ def cut_clips(captioned_video: str, highlights: list, out_dir: str,
     segments:        字幕データ。切り抜き用スタイルで焼き込む(Noneなら字幕なし)
     style:           切り抜き用のテロップ設定辞書(src.subtitle.DEFAULT_STYLE 参照)
     titles:          話題の見出し([{start,end,text}])。渡すと画面左上にも焼き込む
+    logo:            ロゴの設定(src.logo)。渡すと元の映像に重ねる(縦のときは、中央に置いた映像の中に入る)
     hq:              画質優先モード(高画質エンコード+高品質な縮小補間)
     on_progress:     進捗(0.0〜1.0)を受け取るコールバック
     """
     print(f"[5/5] 切り抜き動画を作成中... (形式: {orientation})")
+    logo_src = work_video or captioned_video
+    logo_size = probe(logo_src) if logo else None
 
     for i, h in enumerate(highlights, 1):
         check_cancelled()   # クリップごとに中止要求を確認
@@ -83,14 +88,21 @@ def cut_clips(captioned_video: str, highlights: list, out_dir: str,
             vf_parts.append(f"subtitles='{escape_srt_path(tmp_title_srt)}'"
                             f":force_style='{build_title_style(style)}'")
 
-        if vf_parts:
-            # 再エンコードして切り出し(縦レイアウト化 か テロップ焼き込みがある場合)
+        if vf_parts or logo:
+            # 再エンコードして切り出し(縦レイアウト化・テロップ焼き込み・ロゴがある場合)
             src = work_video if (local or local_titles) else (work_video or captioned_video)
             audio = ["-c:a", "aac"] + (["-b:a", "192k"] if hq else [])
+            if logo:
+                # ロゴは元の映像の位置に重ねてから、縦にしたり字幕を入れたりする
+                picture = ["-i", logo["path"], "-filter_complex",
+                           overlay_graph(logo, logo_size["width"], logo_size["height"], vf_parts),
+                           "-map", "[v]", "-map", "0:a?"]
+            else:
+                picture = ["-vf", ",".join(vf_parts)]
             cmd = ["ffmpeg", "-y",
                    "-ss", str(h["start"]), "-to", str(h["end"]),
                    "-i", src,
-                   "-vf", ",".join(vf_parts),
+                   *picture,
                    "-c:v", "libx264", *quality_args(hq),
                    *audio, out_path]
         else:

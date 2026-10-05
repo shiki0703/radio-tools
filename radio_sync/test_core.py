@@ -180,6 +180,90 @@ class Tests(unittest.TestCase):
                 core.export_episode(e, root/'out.mp4')
 
 
+class EndingTests(unittest.TestCase):
+    """話の後ろにエンディング曲を足す書き出し"""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.dir = tempfile.TemporaryDirectory()
+        root = cls.root = Path(cls.dir.name)
+        rng = np.random.default_rng(3)
+        cls.radio = rng.normal(0, .1, core.RATE * 8).astype('float32')
+        wavfile.write(root/'radio.wav', core.RATE, cls.radio)
+        ff = core.binary('ffmpeg')
+        # カメラ:青い画面が 20 秒(話は 2〜10 秒の所を使うので、後ろにまだ映像がある)
+        core.run([ff, '-v', 'error', '-f', 'lavfi', '-i', 'color=c=blue:s=320x180:r=30', '-f', 'lavfi',
+                  '-i', 'sine=frequency=200:sample_rate=48000', '-t', '20', '-c:v', 'libx264', '-threads', '2',
+                  '-c:a', 'aac', root/'camera.mp4'])
+        # 曲:440Hz が 3 秒
+        core.run([ff, '-v', 'error', '-f', 'lavfi', '-i', 'sine=frequency=440:sample_rate=44100', '-t', '3',
+                  root/'song.mp3'])
+        # 映像がない所の画像:赤
+        core.run([ff, '-v', 'error', '-f', 'lavfi', '-i', 'color=c=red:s=100x50', '-frames:v', '1', root/'red.png'])
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.dir.cleanup()
+
+    def episode(self, source=2.0, video='camera.mp4'):
+        return {'audio': str(self.root/'radio.wav'), 'duration': 8.0, 'segments': [
+            {'start': 0.0, 'end': 8.0, 'video': str(self.root/video) if video else '', 'source': source,
+             'score': 1, 'status': 'manual', 'enabled': bool(video), 'locked': False, 'candidates': []}]}
+
+    def pixel(self, path, t, x, y):
+        raw = core.run([core.binary('ffmpeg'), '-v', 'error', '-ss', f'{t:.3f}', '-i', path, '-frames:v', '1',
+                        '-f', 'rawvideo', '-pix_fmt', 'rgb24', '-'])
+        frame = np.frombuffer(raw, dtype=np.uint8).reshape(720, 1280, 3)
+        return frame[y, x].astype(int)
+
+    def is_blue(self, rgb):
+        return rgb[2] > 150 and rgb[0] < 80
+
+    def is_red(self, rgb):
+        return rgb[0] > 150 and rgb[2] < 80
+
+    def test_song_is_added_after_the_talk(self):
+        out = self.root/'ending.mp4'
+        core.export_episode(self.episode(), out, ending={'path': str(self.root/'song.mp3'), 'seconds': 3.0})
+        duration, streams = core.probe(out)
+        self.assertAlmostEqual(duration, 11, delta=.1)
+        audio = core.decode(out)
+        # 話の部分はラジオの音のまま
+        self.assertGreater(np.corrcoef(self.radio, audio[:len(self.radio)])[0, 1], .9)
+        # 後ろの 3 秒は曲(440Hz)で、カメラの音(200Hz)は入らない
+        tail = audio[int(core.RATE * 8.2):int(core.RATE * 10.8)]
+        spectrum = np.abs(np.fft.rfft(tail))
+        freqs = np.fft.rfftfreq(len(tail), 1 / core.RATE)
+        self.assertAlmostEqual(freqs[np.argmax(spectrum)], 440, delta=5)
+        self.assertLess(spectrum[np.argmin(abs(freqs - 200))], spectrum.max() * .05)
+        # 曲のあいだもカメラの映像が続く
+        self.assertTrue(self.is_blue(self.pixel(out, 10.0, 640, 360)))
+        # 動画クリッパーに、曲の長さを伝える
+        tags = json.loads(core.run([core.binary('ffprobe'), '-v', 'error', '-show_entries', 'format_tags=comment',
+                                    '-of', 'json', out]))['format']['tags']
+        self.assertEqual(tags['comment'], 'radio-sync ending=3.000')
+
+    def test_camera_that_already_stopped_holds_the_last_frame(self):
+        out = self.root/'stopped.mp4'
+        # カメラの残りは 1 秒だけ(19〜20 秒)。曲は 3 秒
+        core.export_episode(self.episode(source=11.0), out, ending={'path': str(self.root/'song.mp3'), 'seconds': 3.0})
+        duration, _ = core.probe(out)
+        self.assertAlmostEqual(duration, 11, delta=.1)
+        self.assertTrue(self.is_blue(self.pixel(out, 10.8, 640, 360)))
+
+    def test_still_at_the_end_stays_during_the_song(self):
+        out = self.root/'still.mp4'
+        core.export_episode(self.episode(video=''), out, still=str(self.root/'red.png'),
+                            ending={'path': str(self.root/'song.mp3'), 'seconds': 3.0})
+        self.assertTrue(self.is_red(self.pixel(out, 10.0, 640, 360)))
+
+    def test_without_ending_nothing_changes(self):
+        out = self.root/'plain.mp4'
+        core.export_episode(self.episode(), out)
+        duration, _ = core.probe(out)
+        self.assertAlmostEqual(duration, 8, delta=.1)
+
+
 
 class TrimTests(unittest.TestCase):
     """いらない所を削ってから、残りを分けて書き出す処理"""

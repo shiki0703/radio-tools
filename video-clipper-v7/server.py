@@ -19,6 +19,7 @@ import ipaddress
 import socket
 import json
 import os
+import re
 from pathlib import Path
 import queue
 import secrets
@@ -46,6 +47,7 @@ from src.title import make_topic_titles  # noqa: E402
 from src.bookend import attach as attach_bookend  # noqa: E402
 from src.clip import cut_clips  # noqa: E402
 from src import chapters as chap  # noqa: E402
+from src.logo import clean_logo, DEFAULT_LOGO, IMAGE_EXT  # noqa: E402
 
 WEB = HERE / 'web'
 DATA = HERE / 'data'
@@ -65,7 +67,7 @@ TYPES = {'.mp4': 'video/mp4', '.m4v': 'video/mp4', '.mov': 'video/mp4', '.webm':
          '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8'}
 CLIP_STYLE = dict(DEFAULT_STYLE, pos_y=0.78)
 DEFAULT_SETTINGS = {'do_transcribe': True, 'do_clip': True, 'accuracy': 'standard', 'hq': False, 'show_titles': False, 'title_scope': 'corner', 'title_maker': 'ai', 'intro': '', 'outro': '',
-                    'orientation': 'horizontal', 'clip_length': 30, 'style': {'main': DEFAULT_STYLE, 'clip': CLIP_STYLE}}
+                    'logo': DEFAULT_LOGO, 'orientation': 'horizontal', 'clip_length': 30, 'style': {'main': DEFAULT_STYLE, 'clip': CLIP_STYLE}}
 
 CGNAT = ipaddress.ip_network('100.64.0.0/10')    # 回線側 NAT の中(モバイル回線などで使われる)
 # 同じ Wi-Fi のスマホに開けるときの状態(ふだんは閉じている)
@@ -150,6 +152,7 @@ def load_settings():
     merged = {**DEFAULT_SETTINGS, **{k: v for k, v in saved.items() if k in DEFAULT_SETTINGS}}
     style = saved.get('style') or {}
     merged['style'] = {'main': normalize_style(style.get('main')), 'clip': normalize_style(style.get('clip'), base=CLIP_STYLE)}
+    merged['logo'] = allow_logo(clean_logo(merged.get('logo')))
     return merged
 
 
@@ -170,10 +173,24 @@ def clean_settings(raw):
         'title_maker': raw.get('title_maker') if raw.get('title_maker') in ('ai', 'words') else 'ai',
         'intro': clean_clip_path(raw.get('intro')),
         'outro': clean_clip_path(raw.get('outro')),
+        'logo': allow_logo(clean_logo(raw.get('logo'))),
         'orientation': raw.get('orientation') if raw.get('orientation') in ('horizontal', 'vertical') else 'horizontal',
         'clip_length': max(5.0, min(120.0, length)),
         'style': {'main': normalize_style(style.get('main')), 'clip': normalize_style(style.get('clip'), base=CLIP_STYLE)},
     }
+
+
+def allow_logo(logo):
+    """ロゴの画像を、画面で表示できるようにしておく"""
+    if logo['path']:
+        ALLOWED.add(key(logo['path']))
+    return logo
+
+
+def logo_of(project):
+    """焼き込みに使うロゴ(重ねないときは None)"""
+    logo = clean_logo(project['settings'].get('logo'))
+    return logo if logo['on'] else None
 
 
 def clean_clip_path(value):
@@ -376,7 +393,8 @@ def run_process(project):
         work_video, duration = prepare_video(project['source'], str(out_dir),
                                              on_message=lambda m: JOB.update(message=m),
                                              on_progress=lambda f: progress('前処理', f * 0.9), hq=settings['hq'])
-        project.update(work_video=str(work_video), duration=duration)
+        project.update(work_video=str(work_video), duration=duration,
+                       ending_seconds=embedded_ending(project['source']))
         save_project(project)
         wav = extract_audio(work_video, str(out_dir))
         progress('前処理', 1.0)
@@ -386,6 +404,7 @@ def run_process(project):
             progress('文字起こし', 0, '音声を文字起こししています(初回はAIモデルの取得で数分かかります)')
             segments = transcribe(wav, accuracy=settings['accuracy'],
                                   on_progress=lambda f: progress('文字起こし', f, f'音声を文字起こししています({round(f * 100)}%)'))
+            segments = without_ending(segments, project)
             project['segments'] = segments
             if settings['show_titles']:
                 project['titles'] = topic_titles(project, segments)
@@ -393,7 +412,8 @@ def run_process(project):
             burn(project, segments, 'テロップ焼き込み', '字幕を動画に焼き込んでいます')
         if settings['do_clip']:
             progress('盛り上がり検出', 0, '盛り上がり箇所を分析しています')
-            project['highlights'] = detect_highlights(wav, segments, str(out_dir), clip_length=settings['clip_length'], n_clips=5)
+            project['highlights'] = detect_highlights(wav, segments, str(out_dir), clip_length=settings['clip_length'], n_clips=5,
+                                                      limit=body_seconds(project) if ending_seconds(project) else None)
             progress('盛り上がり検出', 1.0)
             make_clips(project, segments, '切り抜き動画を書き出しています')
         finish(project, 'done')
@@ -498,7 +518,7 @@ def burn(project, segments, step, message):
     progress(step, 0, message)
     burn_subtitles(project['work_video'], str(srt), str(out_dir / 'captioned.mp4'), duration=project['duration'],
                    style=project['style']['main'], hq=project['settings']['hq'],
-                   titles_srt=write_titles_srt(project),
+                   titles_srt=write_titles_srt(project), logo=logo_of(project),
                    on_progress=lambda f: progress(step, f, f'{message}({round(f * 100)}%)'))
     settings = project['settings']
     intro, outro = clean_clip_path(settings.get('intro')), clean_clip_path(settings.get('outro'))
@@ -521,6 +541,7 @@ def make_clips(project, segments, message):
               segments=segments if project['settings']['do_transcribe'] else None,
               style=project['style']['clip'], hq=project['settings']['hq'],
               titles=(project.get('titles') or []) if project['settings'].get('show_titles') else None,
+              logo=logo_of(project),
               on_progress=lambda f: progress('切り抜き作成', f, f'{message}({round(f * 100)}%)'))
     project['clips'] = [f'clip_{i}.mp4' for i in range(1, len(project['highlights']) + 1)]
     save_project(project)
@@ -574,6 +595,8 @@ def start_reburn(body):
         for key_name in ('intro', 'outro'):
             if isinstance(body.get(key_name), str):
                 project['settings'] = {**project['settings'], key_name: clean_clip_path(body[key_name])}
+        if isinstance(body.get('logo'), dict):
+            project['settings'] = {**project['settings'], 'logo': clean_logo(body['logo'])}
         if body.get('title_scope') in ('fine', 'corner', 'whole'):
             # 見出しの細かさを変えたときは作り直す(手で直した見出しは上書きされる)
             project['settings'] = {**project['settings'], 'title_scope': body['title_scope']}
@@ -627,11 +650,46 @@ def clip_seconds(path):
 
 
 def bookend_seconds(project, kind):
-    """前後につないだ(つなぐ予定の)オープニング・エンディングの長さ(秒)。kind は 'intro' / 'outro'"""
+    """前後につないだ(つなぐ予定の)オープニング・エンディングの長さ(秒)。kind は 'intro' / 'outro'
+
+    Radio Sync で付けたエンディング曲も、エンディングに数える(見出しは曲の前で終わり、概要欄では「エンディング」になる)
+    """
     if isinstance(project.get(f'{kind}_seconds'), (int, float)):
-        return float(project[f'{kind}_seconds'])
-    # 長さを覚える前に作った結果や、まだ焼き込む前(見出し待ち)は、つなぐ動画からその場で測る
-    return clip_seconds(clean_clip_path(project['settings'].get(kind)))
+        seconds = float(project[f'{kind}_seconds'])
+    else:
+        # 長さを覚える前に作った結果や、まだ焼き込む前(見出し待ち)は、つなぐ動画からその場で測る
+        seconds = clip_seconds(clean_clip_path(project['settings'].get(kind)))
+    return seconds + (ending_seconds(project) if kind == 'outro' else 0.0)
+
+
+ENDING_TAG = re.compile(r'radio-sync ending=([0-9.]+)')
+
+
+def embedded_ending(path):
+    """Radio Sync がエンディング曲を付けて書き出した動画なら、その曲の長さ(秒)。それ以外は 0"""
+    try:
+        out = subprocess.run(['ffprobe', '-v', 'error', '-show_entries', 'format_tags=comment', '-of', 'json', str(path)],
+                             capture_output=True, text=True, encoding='utf-8', errors='replace',
+                             creationflags=NO_WINDOW).stdout
+        comment = (json.loads(out or '{}').get('format', {}).get('tags') or {}).get('comment', '')
+    except (OSError, ValueError):
+        return 0.0
+    m = ENDING_TAG.search(comment or '')
+    return round(float(m.group(1)), 3) if m else 0.0
+
+
+def ending_seconds(project):
+    """本編の最後に入っているエンディング曲の長さ(秒)"""
+    return float(project.get('ending_seconds') or 0.0)
+
+
+def without_ending(segments, project):
+    """エンディング曲のところの字幕を外す。
+    曲を文字起こしすると、話していないのに「ご視聴ありがとうございました」などが出てくるため"""
+    if not ending_seconds(project):
+        return segments
+    cut = body_seconds(project)
+    return [{**s, 'end': min(s['end'], cut)} for s in segments if s['start'] < cut - 0.3]
 
 
 def intro_seconds(project):
@@ -668,8 +726,10 @@ def chapter_segments(project):
 
 
 def body_seconds(project):
+    """本編の長さ(最後に入っているエンディング曲は含めない)"""
     segments = project.get('segments') or []
-    return float(project.get('duration') or (segments[-1]['end'] if segments else 0))
+    total = float(project.get('duration') or (segments[-1]['end'] if segments else 0))
+    return max(0.0, total - ending_seconds(project))
 
 
 def load_chapters(project):
@@ -781,6 +841,7 @@ def project_view(name):
         if (folder / f).is_file():
             files.append({'name': f, 'path': str(folder / f), 'size': (folder / f).stat().st_size,
                           'url': media_url(folder / f) + stamp})
+    allow_logo(clean_logo(project['settings'].get('logo')))
     return {**project, 'folder': str(folder), 'files': files, 'source_exists': Path(project['source']).is_file(),
             'lead': intro_seconds(project) if project.get('has_captioned') else 0.0,
             'can_fix': bool(project.get('work_video')) and Path(project['work_video']).is_file()}
@@ -882,6 +943,16 @@ def pick_video(body):
         if not DIALOGS:
             DIALOGS.append(Dialogs())
     kind = body.get('kind')
+    if kind == 'logo':
+        path = DIALOGS[0].ask(lambda root, d: d.askopenfilename(
+            parent=root, title='重ねるロゴの画像を選ぶ(背景が透明な PNG がおすすめ)',
+            filetypes=[('画像', ' '.join('*' + e for e in sorted(IMAGE_EXT)))]))
+        path = os.path.normpath(path) if path else ''
+        if path and Path(path).suffix.lower() not in IMAGE_EXT:
+            raise UserError('PNG か JPEG の画像を選んでください。')
+        if path:
+            ALLOWED.add(key(path))
+        return {'path': path}
     titles = {'intro': 'オープニングの動画を選ぶ', 'outro': 'エンディングの動画を選ぶ'}
     patterns = ' '.join('*' + e for e in sorted(VIDEO_EXT))
     path = DIALOGS[0].ask(lambda root, d: d.askopenfilename(

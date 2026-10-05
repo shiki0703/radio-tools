@@ -205,22 +205,31 @@ def subtitles_filters(srt_path: str, style: dict, titles_srt: str = None) -> lis
 
 def burn_subtitles(video_path: str, srt_path: str, out_path: str,
                    duration: float = 0, on_progress=None, style: dict = None,
-                   hq: bool = False, titles_srt: str = None):
+                   hq: bool = False, titles_srt: str = None, logo: dict = None):
     """ffmpegで字幕を動画に焼き込む(テロップ化)。進捗を%で通知できる。
 
     titles_srt を渡すと、画面の左上に話題の見出しも焼き込む。
+    logo(src.logo の設定)を渡すと、ロゴも重ねる(字幕・見出しはロゴより上)。
     hq(画質優先モード)のときは高画質寄りのエンコード設定を使う。
     """
-    from src.preprocess import run_ffmpeg_progress, quality_args
+    from src.preprocess import run_ffmpeg_progress, quality_args, probe
+    from src.logo import overlay_graph
     print("      テロップを焼き込み中...")
 
     # 失敗・中止したとき、書きかけのファイルが完成済み動画を上書きして
     # 壊さないよう、一時ファイルへ書き出してから置き換える
     tmp = Path(out_path).with_name("_" + Path(out_path).stem + "_tmp.mp4")
 
+    filters = subtitles_filters(srt_path, style, titles_srt)
+    if logo:
+        info = probe(video_path)
+        picture = ["-i", logo["path"], "-filter_complex",
+                   overlay_graph(logo, info["width"], info["height"], filters), "-map", "[v]", "-map", "0:a?"]
+    else:
+        picture = ["-vf", ",".join(filters)]
     cmd = [
         "ffmpeg", "-i", video_path,
-        "-vf", ",".join(subtitles_filters(srt_path, style, titles_srt)),
+        *picture,
         "-c:v", "libx264", *quality_args(hq),
         "-c:a", "copy",
         str(tmp),
