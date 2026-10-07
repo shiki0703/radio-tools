@@ -57,6 +57,17 @@ class LogoTest(unittest.TestCase):
     def tearDownClass(cls):
         cls.dir.cleanup()
 
+    def test_chosen_logo_is_kept_inside_the_tool(self):
+        import server
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as d, patch.object(server, 'LOGOS', Path(d) / 'logos'):
+            first = server.keep_logo(str(self.root / 'logo.png'))
+            again = server.keep_logo(str(self.root / 'logo.png'))
+            self.assertEqual(first, again)                       # 同じ画像なら、同じ控え
+            self.assertTrue(Path(first).is_file())
+            self.assertEqual(Path(first).parent, Path(d) / 'logos')
+            self.assertEqual(Path(first).read_bytes(), (self.root / 'logo.png').read_bytes())
+
     def test_box_is_in_pixels_of_the_video(self):
         self.assertEqual(logo_box(self.logo, 640, 360), (64, 512, 18))
         self.assertEqual(logo_box(self.logo, 3840, 2160), (384, 3072, 108))

@@ -1057,6 +1057,7 @@ async function openProject(name) {
 
 function saveDraftSoon() {
   clearTimeout(draftTimer);
+  refreshRebuildBar();
   const name = S.project.name;
   draftTimer = setTimeout(() => api('/api/draft', { project: name, draft: { segs: S.edit.segs, titles: S.edit.titles, showTitles: S.edit.showTitles, shift: S.edit.shift, style: S.edit.style, logo: S.edit.logo, intro: S.edit.intro, outro: S.edit.outro } }).catch(() => {}), 1000);
 }
@@ -1203,6 +1204,8 @@ function setActiveLine(i) {
 
 function playIn(video, from, to) {
   if (!video) return;
+  const box = video.closest('details.section');
+  if (box && !box.open) box.open = true;
   video.currentTime = Math.max(0, from);
   stopAt = to;
   video.play().catch(() => {});
@@ -1238,7 +1241,7 @@ function renderReview() {
     save: (logo) => { S.edit.logo = logo; saveDraftSoon(); },
     thumb: () => S.projectThumb,
     onChange: () => reviewEditor?.update(),
-    note: ' 変えたら「この内容で作り直す」で動画に反映されます。',
+    note: ' 変えたら、下の「この内容で作り直す」で動画に入ります。',
   }) : null;
 
   const video = p.has_captioned ? h('video', { id: 'fixVideo', controls: true, playsinline: true, disablePictureInPicture: true, controlsList: 'nofullscreen nodownload noremoteplayback', preload: 'metadata', src: fileUrl('captioned.mp4') }) : null;
@@ -1256,20 +1259,12 @@ function renderReview() {
   const lines = p.has_captioned ? h('div', { class: 'lines' }, S.edit.segs.map((s, i) => lineRow(i, playMain))) : null;
 
   // 話題の見出し(左上)。自動で作ったものをここで直せる
-  const titlesCard = h('div', { class: 'card', style: 'display:grid;gap:12px' },
-    h('div', { class: 'card-head' },
-      h('div', {},
-        h('h3', {}, '話題の見出し(画面の左上)', p.titles_by === 'ai' && h('span', { class: 'chip auto', style: 'margin-left:8px' }, 'AI で作成')),
-        h('p', { class: 'muted small' }, 'いま何の話かを自動で付けています。おかしいものはここで直せます(空にするとその区間は出ません)。'
-          + ' 下の「YouTube の概要欄」で作った見出しを、ここに使うこともできます。'),
-          p.title_note && h('div', { class: 'notice warn', style: 'margin-top:8px' }, p.title_note)),
-      h('label', { class: 'check' },
-        h('input', {
-          type: 'checkbox', checked: S.edit.showTitles,
-          onchange: (e) => { S.edit.showTitles = e.target.checked; saveDraftSoon(); renderReview(); },
-        }), '見出しを出す')),
+  const titlesBody = [
+    h('p', { class: 'muted small' }, 'いま何の話かを自動で付けています。おかしいものはここで直せます(空にするとその区間は出ません)。'
+      + ' 下の「YouTube の概要欄」で作った見出しを、ここに使うこともできます。'),
+    p.title_note && h('div', { class: 'notice warn' }, p.title_note),
     S.edit.titles.length
-      ? h('div', { class: 'lines titles' }, S.edit.titles.map((t, i) => h('div', { class: 'line' },
+      ? h('div', { class: 'lines titles' }, S.edit.titles.map((t) => h('div', { class: 'line' },
           h('div', { class: 'linetop' },
             h('button', {
               class: 't', title: 'この箇所を再生',
@@ -1278,8 +1273,9 @@ function renderReview() {
             h('input', {
               value: t.text, placeholder: '(空にすると出しません)', disabled: !S.edit.showTitles,
               oninput: (e) => { t.text = e.target.value; saveDraftSoon(); reviewEditor?.update(); },
-            }))))) 
-      : h('div', { class: 'empty' }, '見出しはありません(処理のときに「話題の見出しを左上に出す」が切だった場合は、設定を入にしてもう一度処理してください)'));
+            })))))
+      : h('div', { class: 'empty' }, '見出しはありません(処理のときに「話題の見出しを左上に出す」が切だった場合は、設定を入にしてもう一度処理してください)'),
+  ];
 
   const timing = h('div', { class: 'timing' },
     h('label', {}, 'テロップ全体のタイミング'),
@@ -1293,8 +1289,9 @@ function renderReview() {
       },
     }),
     h('span', { class: 'val mono' }, fmtShift(shift)),
-    h('p', { class: 'hint' }, 'テロップが音声より早い・遅いときに、全部まとめてずらします(＋で遅く)。「この内容で作り直す」で動画に反映され、ずらした分は各行の時刻に入るので、この目盛りは0に戻ります。'));
+    h('p', { class: 'hint' }, 'テロップが音声より早い・遅いときに、全部まとめてずらします(＋で遅く)。下の「この内容で作り直す」で動画に反映され、ずらした分は各行の時刻に入るので、この目盛りは0に戻ります。'));
 
+  const logoOn = S.edit.logo.on && S.edit.logo.path;
   $('view-review').replaceChildren(h('div', { class: 'page wide' },
     h('div', { class: 'spread' },
       h('div', {},
@@ -1305,34 +1302,39 @@ function renderReview() {
     p.status !== 'done' && h('div', { class: 'notice warn' },
       p.status === 'running' ? 'この処理はまだ実行中です。「3 処理」で進み具合を確認できます。'
         : `この処理は${STATUS_LABEL[p.status] || '途中で終了'}しています。できた所までの動画を確認できます。`),
-    p.has_captioned && h('div', { class: 'card', style: 'display:grid;gap:14px' },
-      h('div', { class: 'card-head' },
-        h('div', {},
-          h('h3', {}, 'テロップの確認・修正'),
-          h('p', { class: 'muted small' }, '時刻のボタンでその箇所を再生します。行を選ぶと、分割・追加・削除と時刻の微調整ができます(Ctrl+Enterでもカーソル位置で分割)。Enterで次の行へ。直した内容は自動で保存されます。')),
-        changedCount > 0 && h('span', { class: 'chip review' }, `${changedCount} 行を修正中`)),
+    p.has_captioned && section('captions', 'テロップの確認・修正', {
+      extra: changedCount > 0 && h('span', { class: 'chip review' }, `${changedCount} 行を修正中`),
+    },
+      h('p', { class: 'muted small' }, '時刻のボタンでその箇所を再生します。行を選ぶと、分割・追加・削除と時刻の微調整ができます(Ctrl+Enterでもカーソル位置で分割)。Enterで次の行へ。直した内容は自動で保存されます。'),
       h('div', { class: 'fix' }, video, lines),
       timing,
       h('details', { class: 'adv', open: false },
         h('summary', {}, 'テロップの見た目を変える'),
-        h('div', { style: 'margin-top:12px' }, reviewEditor.el)),
-      h('details', { class: 'adv', open: false, ontoggle: () => reviewLogo?.update() },
-        h('summary', {}, S.edit.logo.on && S.edit.logo.path ? `ロゴ(${basename(S.edit.logo.path)})` : 'ロゴを重ねる'),
-        h('div', { style: 'margin-top:12px' }, reviewLogo.el)),
-      h('div', { class: 'rebuild' },
-        h('b', {}, '作り直す対象'),
-        h('label', { class: 'check' }, h('input', { type: 'checkbox', checked: S.edit.main, onchange: (e) => { S.edit.main = e.target.checked; } }), '元動画'),
-        clips.length > 0 && h('label', { class: 'check' }, h('input', { type: 'checkbox', checked: S.edit.clip, onchange: (e) => { S.edit.clip = e.target.checked; } }), '切り抜き動画'),
-        h('span', { style: 'flex:1' }),
-        !p.can_fix && h('span', { class: 'bad-text small' }, '作業用の動画が見つからないため作り直せません'),
-        h('button', { class: 'primary big', disabled: busy || !p.can_fix, onclick: guard(startReburn) }, 'この内容で作り直す ▶'))),
-    p.has_captioned && p.settings.do_transcribe && titlesCard,
-    p.segments?.length > 0 && chaptersCard(p),
-    clips.length > 0 && h('div', { class: 'card', style: 'display:grid;gap:14px' },
-      h('div', {},
-        h('h3', {}, '切り抜き候補'),
-        h('p', { class: 'muted small' }, '話題のまとまりごとに盛り上がりを見て選んでいます。動画の中の時間順に並べ、スコアの内訳が選ばれた理由です。'
-          + (p.has_captioned ? ' 切り抜きに入るテロップは、その場で直せます(直したら「この内容で作り直す」)。' : ''))),
+        h('div', { style: 'margin-top:12px' }, reviewEditor.el))),
+    p.has_captioned && p.settings.do_transcribe && section('titles', '話題の見出し(画面の左上)', {
+      open: false,
+      extra: [
+        p.titles_by === 'ai' && h('span', { class: 'chip auto' }, 'AI で作成'),
+        h('label', { class: 'check' },
+          h('input', {
+            type: 'checkbox', checked: S.edit.showTitles,
+            onchange: (e) => { S.edit.showTitles = e.target.checked; saveDraftSoon(); renderReview(); },
+          }), '見出しを出す'),
+      ],
+    }, ...titlesBody),
+    p.segments?.length > 0 && section('chapters', 'YouTube の概要欄', {}, chaptersCard(p)),
+    p.has_captioned && section('logo', 'ロゴ', {
+      open: false,
+      onopen: () => reviewLogo?.update(),
+      extra: h('span', { class: logoOn ? 'chip auto' : 'muted small' }, logoOn ? basename(S.edit.logo.path) : '重ねない'),
+    }, reviewLogo.el),
+    p.has_captioned && section('bookends', 'オープニング・エンディング', {
+      open: false,
+      extra: h('span', { class: 'muted small' }, [S.edit.intro && 'OP あり', S.edit.outro && 'ED あり'].filter(Boolean).join('・') || 'つながない'),
+    }, ...bookendBody()),
+    clips.length > 0 && section('clips', '切り抜き候補', { open: false, extra: h('span', { class: 'muted small' }, `${clips.length} 本`) },
+      h('p', { class: 'muted small' }, '話題のまとまりごとに盛り上がりを見て選んでいます。動画の中の時間順に並べ、スコアの内訳が選ばれた理由です。'
+        + (p.has_captioned ? ' 切り抜きに入るテロップは、その場で直せます(直したら下の「この内容で作り直す」)。' : '')),
       h('div', { class: 'clips' }, clips.map((c, i) => {
         const from = c.h.start || 0, to = c.h.end || 0;
         const clipVideo = h('video', { controls: true, playsinline: true, disablePictureInPicture: true, controlsList: 'nofullscreen nodownload noremoteplayback', preload: 'metadata', src: c.url });
@@ -1365,24 +1367,99 @@ function renderReview() {
               : h('div', { class: 'empty' }, 'この範囲にテロップはありません')),
           h('div', { class: 'row' }, h('button', { class: 'ghost', onclick: guard(() => api('/api/open', { path: `${p.folder}\\${c.name}` })) }, '場所を表示')));
       }))),
-    h('div', { class: 'card', style: 'display:grid;gap:12px' },
-      h('h3', {}, 'できたファイル'),
+    section('files', 'できたファイル', { open: false, extra: h('span', { class: 'muted small' }, `${p.files.length} 個`) },
       p.files.length
         ? h('ul', { class: 'filelist' }, p.files.map((f) => h('li', {},
             h('span', {}, h('b', {}, f.name), ' ', h('span', { class: 'muted small' }, fmtSize(f.size))),
             h('button', { class: 'ghost', onclick: guard(() => api('/api/open', { path: f.path })) }, '場所を表示'))))
         : h('div', { class: 'empty' }, 'まだファイルはありません'),
       h('p', { class: 'muted small' }, `保存場所: ${p.folder}`)),
-    p.has_captioned && reviewBookendCard(p)));
+    p.has_captioned && h('div', { class: 'rebuild-bar', id: 'rebuildBar' })));
+  refreshRebuildBar();
   reviewEditor?.update();
+}
+
+/* ---------- 確認・修正:開け閉めできる欄と、まとめて作り直すところ ---------- */
+
+const OPEN_KEY = 'video-clipper-sections';
+
+function sectionOpen(id, fallback) {
+  try {
+    const saved = JSON.parse(localStorage.getItem(OPEN_KEY) || '{}');
+    return id in saved ? !!saved[id] : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function rememberOpen(id, open) {
+  try {
+    const saved = JSON.parse(localStorage.getItem(OPEN_KEY) || '{}');
+    saved[id] = open;
+    localStorage.setItem(OPEN_KEY, JSON.stringify(saved));
+  } catch { /* 覚えられなくても開け閉めはできる */ }
+}
+
+/** 見出しを押すと開け閉めできる欄。開け閉めは次に開いたときも覚えている */
+function section(id, title, { open = true, extra = null, onopen = null } = {}, ...body) {
+  const el = h('details', { class: 'card section', 'data-section': id, open: sectionOpen(id, open) },
+    h('summary', {}, h('h3', {}, title), h('span', { class: 'sec-extra' }, extra)),
+    h('div', { class: 'sec-body' }, ...body));
+  el.addEventListener('toggle', () => {
+    rememberOpen(id, el.open);
+    if (el.open) onopen?.();
+  });
+  return el;
 }
 
 const bookendChanged = (p) => (S.edit.intro || '') !== (p.settings.intro || '') || (S.edit.outro || '') !== (p.settings.outro || '');
 
-/** 確認・修正:オープニング・エンディングを選び直す(元動画を作り直して、つなぎ直す) */
-function reviewBookendCard(p) {
+function logoChanged(p) {
+  const sig = (l) => {
+    const x = { ...LOGO_DEFAULT, ...(l || {}) };
+    return x.on && x.path ? JSON.stringify([x.path, x.x, x.y, x.w]) : 'off';
+  };
+  return sig(S.edit.logo) !== sig(p.settings.logo);
+}
+
+/** まだ動画に入っていない変更(作り直すと入る) */
+function pendingChanges(p) {
+  const out = [];
+  const lines = S.edit.segs.filter((s, i) => segChanged(i)).length;
+  if (lines) out.push(`テロップ ${lines} 行`);
+  if (S.edit.shift) out.push('タイミング');
+  if (JSON.stringify(S.edit.style) !== JSON.stringify(p.style)) out.push('テロップの見た目');
+  if (S.edit.showTitles !== !!p.settings.show_titles || titlesSig(S.edit.titles) !== titlesSig(p.titles || [])) out.push('話題の見出し');
+  if (logoChanged(p)) out.push('ロゴ');
+  if (bookendChanged(p)) out.push('オープニング・エンディング');
+  return out;
+}
+
+/** 画面の下の「作り直す」。直した内容をまとめて動画に入れる */
+function refreshRebuildBar() {
+  const bar = $('rebuildBar');
+  const p = S.project;
+  if (!bar || !p) return;
   const busy = S.job?.state === 'running';
-  const changed = bookendChanged(p);
+  const changes = pendingChanges(p);
+  const hasClips = p.clips.length > 0;
+  bar.replaceChildren(
+    h('div', { class: 'rb-changes' },
+      changes.length
+        ? [h('b', {}, 'まだ動画に入っていない変更'), ...changes.map((c) => h('span', { class: 'chip review' }, c))]
+        : h('span', { class: 'muted small' }, 'まだ動画に入っていない変更はありません')),
+    h('div', { class: 'rb-actions' },
+      h('b', {}, '作り直す対象'),
+      h('label', { class: 'check' }, h('input', { type: 'checkbox', checked: S.edit.main, onchange: (e) => { S.edit.main = e.target.checked; } }), '元動画'),
+      hasClips && h('label', { class: 'check' }, h('input', { type: 'checkbox', checked: S.edit.clip, onchange: (e) => { S.edit.clip = e.target.checked; } }), '切り抜き動画'),
+      h('span', { style: 'flex:1' }),
+      !p.can_fix && h('span', { class: 'bad-text small' }, '作業用の動画が見つからないため作り直せません'),
+      h('button', { class: 'primary big', disabled: busy || !p.can_fix, onclick: guard(startReburn) }, 'この内容で作り直す ▶')));
+}
+
+/** オープニング・エンディングを選び直す欄の中身 */
+function bookendBody() {
+  const busy = S.job?.state === 'running';
   const row = (kind, label, note) => {
     const path = S.edit[kind] || '';
     return h('div', { class: 'bookend' + (path ? ' on' : '') },
@@ -1400,24 +1477,14 @@ function reviewBookendCard(p) {
         }, path ? '選び直す' : '動画を選ぶ'),
         path && h('button', { class: 'ghost', disabled: busy, onclick: () => { S.edit[kind] = ''; saveDraftSoon(); renderReview(); } }, '外す')));
   };
-  return h('div', { class: 'card', style: 'display:grid;gap:12px' },
-    h('h3', {}, 'オープニング・エンディング'),
+  return [
     h('p', { class: 'muted small' }, '元動画の前後につなぐ動画を選び直せます(切り抜きには付きません)。'
-      + 'エンディングの前は、本編の最後の2秒で映像を徐々に暗く・音を徐々に小さくしてからつなぎます。'),
+      + 'エンディングの前は、本編の最後の2秒で映像を徐々に暗く・音を徐々に小さくしてからつなぎます。'
+      + '選び直したら、下の「この内容で作り直す」で元動画に入ります。'),
     h('div', { class: 'bookends' },
       row('intro', 'オープニング', '本編の前につなぎます'),
       row('outro', 'エンディング', '本編を徐々に暗くしてから、後ろにつなぎます')),
-    h('div', { class: 'row' },
-      changed
-        ? h('span', { class: 'chip review' }, 'まだ動画に入っていません')
-        : h('span', { class: 'muted small' }, 'いまの動画と同じです'),
-      h('span', { style: 'flex:1' }),
-      !p.can_fix && h('span', { class: 'bad-text small' }, '作業用の動画が見つからないため作り直せません'),
-      h('button', {
-        class: 'primary', disabled: busy || !changed || !p.can_fix,
-        onclick: guard(() => startReburn({ mainOnly: true })),
-      }, '元動画を作り直してつなぐ ▶')),
-    h('p', { class: 'hint' }, 'テロップの焼き込みからやり直すため、元動画の長さに応じて数分かかります。上の「この内容で作り直す」でも反映されます。'));
+  ];
 }
 
 /* ---------- YouTube の概要欄(チャプター) ---------- */
@@ -1828,7 +1895,7 @@ async function useChaptersForTitles() {
 }
 
 function chaptersCard(p) {
-  const card = h('div', { class: 'card', id: 'chapCard', style: 'display:grid;gap:12px' });
+  const card = h('div', { id: 'chapCard', style: 'display:grid;gap:12px' });
   if (CH.project !== p.name) loadChapters(p.name);
   setTimeout(renderChapters);
   return card;
@@ -1840,7 +1907,6 @@ function renderChapters() {
   const d = CH.data;
   const head = h('div', { class: 'card-head' },
     h('div', {},
-      h('h3', {}, 'YouTube の概要欄'),
       h('p', { class: 'muted small' }, '時刻つきの見出し(チャプター)と主なトピックを作ります。「概要欄に貼る文」をコピーして、YouTube の概要欄に貼ってください。')),
     d && h('span', { class: 'chapsource' }));
   if (!d) {
@@ -1900,15 +1966,14 @@ function renderChapters() {
   refreshChapterOutput();
 }
 
-async function startReburn(opts) {
+async function startReburn() {
   const p = S.project;
-  const mainOnly = opts?.mainOnly === true;     // 「元動画を作り直してつなぐ」
   // オープニング・エンディングを替えたときは、元動画を作り直さないと入らない
-  if (!mainOnly && bookendChanged(p) && !S.edit.main) {
+  if (bookendChanged(p) && !S.edit.main) {
     S.edit.main = true;
     toast('オープニング・エンディングを替えたので、元動画も作り直します');
   }
-  const targets = mainOnly ? ['main'] : [S.edit.main && 'main', S.edit.clip && p.clips.length && 'clip'].filter(Boolean);
+  const targets = [S.edit.main && 'main', S.edit.clip && p.clips.length && 'clip'].filter(Boolean);
   if (!targets.length) return toast('作り直す対象を1つ以上選んでください', 'warn');
   const segments = editedSegs();
   if (!segments.length) return toast('テロップの文字がすべて空です', 'warn');

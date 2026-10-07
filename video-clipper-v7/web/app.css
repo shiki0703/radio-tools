@@ -634,3 +634,27 @@ details.adv summary { cursor: pointer; font-size: 13px; font-weight: 600; }
 .logo-size { flex: 1; min-width: 140px; max-width: 260px; }
 .logo-panel .corners { display: flex; gap: 4px; flex-wrap: wrap; }
 .cap-logo { position: absolute; height: auto; pointer-events: none; }
+
+/* 確認・修正:開け閉めできる欄 */
+details.section > summary { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; cursor: pointer; list-style: none; user-select: none; }
+details.section > summary::-webkit-details-marker { display: none; }
+details.section > summary h3 { margin: 0; }
+details.section > summary .sec-extra { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+details.section > summary .sec-extra .check { margin-left: 0; }
+details.section > summary::after { content: '▾'; margin-left: auto; color: var(--muted); font-size: 18px; transition: transform .15s; }
+details.section:not([open]) > summary::after { transform: rotate(-90deg); }
+details.section > .sec-body { display: grid; gap: 14px; margin-top: 14px; }
+
+/* 確認・修正:画面の下の「作り直す」(直した内容をまとめて動画に入れる) */
+.rebuild-bar { position: sticky; bottom: 0; z-index: 6; display: flex; flex-wrap: wrap; align-items: center;
+  justify-content: space-between; gap: 8px 16px; padding: 10px 16px;
+  background: var(--panel); border: 1px solid var(--line-strong); border-radius: 12px; box-shadow: 0 -4px 16px rgba(16, 24, 40, .08); }
+.rebuild-bar .rb-changes { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.rebuild-bar .rb-actions { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+.rebuild-bar .rb-actions .check { margin-left: 0; }
+@media (max-width: 560px) {
+  .rebuild-bar { bottom: calc(62px + env(safe-area-inset-bottom)); padding: 8px 10px; gap: 6px 10px; }
+  .rebuild-bar .rb-actions { gap: 8px; }
+  .rebuild-bar .rb-actions > b { display: none; }
+  .rebuild-bar .rb-actions button.big { padding: 9px 14px; }
+}

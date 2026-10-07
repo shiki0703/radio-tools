@@ -52,6 +52,7 @@ WEB = HERE / 'web'
 DATA = HERE / 'data'
 RESULTS = HERE / 'results'
 THUMBS = DATA / 'thumbs'
+LOGOS = DATA / 'logos'        # 選んだロゴの画像の控え
 SETTINGS = DATA / 'settings.json'
 SECRETS = DATA / 'secrets.json'     # AI に使う API キー(この PC の中だけ。画面には返さない)
 INSTANCE = DATA / 'instance.json'
@@ -179,8 +180,19 @@ def clean_settings(raw):
     }
 
 
+def keep_logo(path):
+    """選んだロゴの画像を data/logos に控えて、その場所を返す。
+    元の画像を動かしたり消したりしても、ロゴが消えないように(中身が同じなら同じ控えを使う)"""
+    data = Path(path).read_bytes()
+    LOGOS.mkdir(parents=True, exist_ok=True)
+    target = LOGOS / (hashlib.sha1(data).hexdigest()[:16] + Path(path).suffix.lower())
+    if not target.is_file():
+        target.write_bytes(data)
+    return str(target)
+
+
 def allow_logo(logo):
-    """ロゴの画像を、画面で表示できるようにしておく"""
+    """ロゴの画像を、画面で表示できるようにしておく(控えを取る前に選んだ、元の場所の画像のため)"""
     if logo['path']:
         ALLOWED.add(key(logo['path']))
     return logo
@@ -801,6 +813,7 @@ def project_view(name):
             files.append({'name': f, 'path': str(folder / f), 'size': (folder / f).stat().st_size,
                           'url': media_url(folder / f) + stamp})
     allow_logo(clean_logo(project['settings'].get('logo')))
+    allow_logo(clean_logo((project.get('draft') or {}).get('logo')))     # 確認・修正で選び直したロゴ
     return {**project, 'folder': str(folder), 'files': files, 'source_exists': Path(project['source']).is_file(),
             'lead': intro_seconds(project) if project.get('has_captioned') else 0.0,
             'can_fix': bool(project.get('work_video')) and Path(project['work_video']).is_file()}
@@ -907,11 +920,11 @@ def pick_video(body):
             parent=root, title='重ねるロゴの画像を選ぶ(背景が透明な PNG がおすすめ)',
             filetypes=[('画像', ' '.join('*' + e for e in sorted(IMAGE_EXT)))]))
         path = os.path.normpath(path) if path else ''
-        if path and Path(path).suffix.lower() not in IMAGE_EXT:
+        if not path:
+            return {'path': ''}
+        if Path(path).suffix.lower() not in IMAGE_EXT:
             raise UserError('PNG か JPEG の画像を選んでください。')
-        if path:
-            ALLOWED.add(key(path))
-        return {'path': path}
+        return {'path': keep_logo(path)}
     titles = {'intro': 'オープニングの動画を選ぶ', 'outro': 'エンディングの動画を選ぶ'}
     patterns = ' '.join('*' + e for e in sorted(VIDEO_EXT))
     path = DIALOGS[0].ask(lambda root, d: d.askopenfilename(
@@ -1218,7 +1231,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def send_media(self, query):
         path = query.get('p', [''])[0]
         k = key(path) if path else ''
-        allowed = k.startswith(key(RESULTS) + os.sep) or k.startswith(key(THUMBS) + os.sep) or k in ALLOWED
+        allowed = (k.startswith(key(RESULTS) + os.sep) or k.startswith(key(THUMBS) + os.sep)
+                   or k.startswith(key(LOGOS) + os.sep) or k in ALLOWED)
         if not secrets.compare_digest(query.get('t', [''])[0], TOKEN) or not allowed or not os.path.isfile(path):
             return self.send_json(404, {'error': 'not found'})
         size = os.path.getsize(path)
