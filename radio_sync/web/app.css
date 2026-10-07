@@ -667,7 +667,3 @@ button.small { padding: 3px 10px; font-size: 12px; }
 .cutshot video, .cutshot img, .screen video, .screen img { pointer-events: none; }
 .ptool .pico { font-family: system-ui, sans-serif; font-weight: 700; }
 #overlay { white-space: pre-line; }
-
-/* エンディング曲 */
-.ending .check { min-width: 210px; }
-.ending-audio { width: 100%; max-width: 420px; height: 36px; }

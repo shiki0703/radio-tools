@@ -19,7 +19,6 @@ import ipaddress
 import socket
 import json
 import os
-import re
 from pathlib import Path
 import queue
 import secrets
@@ -393,8 +392,7 @@ def run_process(project):
         work_video, duration = prepare_video(project['source'], str(out_dir),
                                              on_message=lambda m: JOB.update(message=m),
                                              on_progress=lambda f: progress('前処理', f * 0.9), hq=settings['hq'])
-        project.update(work_video=str(work_video), duration=duration,
-                       ending_seconds=embedded_ending(project['source']))
+        project.update(work_video=str(work_video), duration=duration)
         save_project(project)
         wav = extract_audio(work_video, str(out_dir))
         progress('前処理', 1.0)
@@ -404,7 +402,6 @@ def run_process(project):
             progress('文字起こし', 0, '音声を文字起こししています(初回はAIモデルの取得で数分かかります)')
             segments = transcribe(wav, accuracy=settings['accuracy'],
                                   on_progress=lambda f: progress('文字起こし', f, f'音声を文字起こししています({round(f * 100)}%)'))
-            segments = without_ending(segments, project)
             project['segments'] = segments
             if settings['show_titles']:
                 project['titles'] = topic_titles(project, segments)
@@ -412,8 +409,7 @@ def run_process(project):
             burn(project, segments, 'テロップ焼き込み', '字幕を動画に焼き込んでいます')
         if settings['do_clip']:
             progress('盛り上がり検出', 0, '盛り上がり箇所を分析しています')
-            project['highlights'] = detect_highlights(wav, segments, str(out_dir), clip_length=settings['clip_length'], n_clips=5,
-                                                      limit=body_seconds(project) if ending_seconds(project) else None)
+            project['highlights'] = detect_highlights(wav, segments, str(out_dir), clip_length=settings['clip_length'], n_clips=5)
             progress('盛り上がり検出', 1.0)
             make_clips(project, segments, '切り抜き動画を書き出しています')
         finish(project, 'done')
@@ -650,46 +646,11 @@ def clip_seconds(path):
 
 
 def bookend_seconds(project, kind):
-    """前後につないだ(つなぐ予定の)オープニング・エンディングの長さ(秒)。kind は 'intro' / 'outro'
-
-    Radio Sync で付けたエンディング曲も、エンディングに数える(見出しは曲の前で終わり、概要欄では「エンディング」になる)
-    """
+    """前後につないだ(つなぐ予定の)オープニング・エンディングの長さ(秒)。kind は 'intro' / 'outro'"""
     if isinstance(project.get(f'{kind}_seconds'), (int, float)):
-        seconds = float(project[f'{kind}_seconds'])
-    else:
-        # 長さを覚える前に作った結果や、まだ焼き込む前(見出し待ち)は、つなぐ動画からその場で測る
-        seconds = clip_seconds(clean_clip_path(project['settings'].get(kind)))
-    return seconds + (ending_seconds(project) if kind == 'outro' else 0.0)
-
-
-ENDING_TAG = re.compile(r'radio-sync ending=([0-9.]+)')
-
-
-def embedded_ending(path):
-    """Radio Sync がエンディング曲を付けて書き出した動画なら、その曲の長さ(秒)。それ以外は 0"""
-    try:
-        out = subprocess.run(['ffprobe', '-v', 'error', '-show_entries', 'format_tags=comment', '-of', 'json', str(path)],
-                             capture_output=True, text=True, encoding='utf-8', errors='replace',
-                             creationflags=NO_WINDOW).stdout
-        comment = (json.loads(out or '{}').get('format', {}).get('tags') or {}).get('comment', '')
-    except (OSError, ValueError):
-        return 0.0
-    m = ENDING_TAG.search(comment or '')
-    return round(float(m.group(1)), 3) if m else 0.0
-
-
-def ending_seconds(project):
-    """本編の最後に入っているエンディング曲の長さ(秒)"""
-    return float(project.get('ending_seconds') or 0.0)
-
-
-def without_ending(segments, project):
-    """エンディング曲のところの字幕を外す。
-    曲を文字起こしすると、話していないのに「ご視聴ありがとうございました」などが出てくるため"""
-    if not ending_seconds(project):
-        return segments
-    cut = body_seconds(project)
-    return [{**s, 'end': min(s['end'], cut)} for s in segments if s['start'] < cut - 0.3]
+        return float(project[f'{kind}_seconds'])
+    # 長さを覚える前に作った結果や、まだ焼き込む前(見出し待ち)は、つなぐ動画からその場で測る
+    return clip_seconds(clean_clip_path(project['settings'].get(kind)))
 
 
 def intro_seconds(project):
@@ -726,10 +687,8 @@ def chapter_segments(project):
 
 
 def body_seconds(project):
-    """本編の長さ(最後に入っているエンディング曲は含めない)"""
     segments = project.get('segments') or []
-    total = float(project.get('duration') or (segments[-1]['end'] if segments else 0))
-    return max(0.0, total - ending_seconds(project))
+    return float(project.get('duration') or (segments[-1]['end'] if segments else 0))
 
 
 def load_chapters(project):

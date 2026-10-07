@@ -651,28 +651,9 @@ def frame_counts(durations, fps=FPS):
     return counts
 
 
-WIDTH, HEIGHT = 1280, 720
-
-
-def ending_part(segments, seconds, still=''):
-    """エンディング曲を流すあいだの映像(話の後ろに足す)。
-
-    最後の区間のカメラを、その先もそのまま流す(カメラの音は使わない)。
-    カメラがそれより先に止まっていれば、最後のコマで止めておく。最後が静止画なら、その静止画のまま。
-    """
-    last = segments[-1]
-    if last['enabled'] and last['video']:
-        return {'video': last['video'], 'still': '', 'source': last['source'] + (last['end'] - last['start']),
-                'duration': seconds, 'ending': True}
-    return {'video': '', 'still': last.get('still') or still, 'source': 0.0, 'duration': seconds, 'ending': True}
-
-
 def export_episode(episode, output, still='', notify=lambda s: None, progress=lambda f: None,
-                   cancelled=never, quality=None, ending=None):
-    """Encode a full-length video, then mux the untouched radio timeline once.
-
-    ending: {'path': 曲, 'seconds': 長さ} を渡すと、話の後ろに曲の長さだけ映像を足し、そこで曲を流す。
-    """
+                   cancelled=never, quality=None):
+    """Encode a full-length video, then mux the untouched radio timeline once."""
     output = Path(output).resolve()
     if output.exists():
         raise ValueError('出力先が既に存在します。別の名前を選んでください。')
@@ -688,25 +669,16 @@ def export_episode(episode, output, still='', notify=lambda s: None, progress=la
     if abs(cursor-episode['duration']) > .001:
         raise ValueError('区間が音声全体を覆っていません。')
     parts = plan_parts(segments, still)
-    if ending:
-        parts.append(ending_part(segments, float(ending['seconds']), still))
-    body = episode['duration']
-    full = body + (float(ending['seconds']) if ending else 0.0)
-    total = full or 1.0
+    total = episode['duration'] or 1.0
     with tempfile.TemporaryDirectory(prefix='radio-sync-', dir=output.parent) as temp:
         temp = Path(temp)
         encoded = 0.0
         counts = frame_counts([p['duration'] for p in parts])
         for i, part in enumerate(parts):
-            notify('エンディングの映像を作成' if part.get('ending') else f'映像作成 {i+1}/{len(parts)}')
+            notify(f'映像作成 {i+1}/{len(parts)}')
             duration = part['duration']
             count = counts[i]
-            if part['video'] and part.get('ending'):
-                length, _ = probe(part['video'])
-                # カメラがもう止まっていれば、最後のあたりから始めて最後のコマで止める
-                source = ['-ss', min(part['source'], max(0.0, length - .5)), '-i', part['video']]
-                pad = f'tpad=stop_mode=clone:stop_duration={duration:.3f},'
-            elif part['video']:
+            if part['video']:
                 length, streams = probe(part['video'])
                 if not any(x['codec_type'] == 'video' for x in streams) or part['source']+duration > length+OVERRUN:
                     raise ValueError('動画の範囲外です: ' + part['video'])
@@ -715,10 +687,9 @@ def export_episode(episode, output, still='', notify=lambda s: None, progress=la
             elif part['still']:
                 source, pad = ['-loop', '1', '-i', part['still']], ''
             else:
-                source, pad = ['-f', 'lavfi', '-i', f'color=c=0x17212b:s={WIDTH}x{HEIGHT}:r={FPS}'], ''
-            fit = (pad + f'scale={WIDTH}:{HEIGHT}:force_original_aspect_ratio=decrease,'
-                   f'pad={WIDTH}:{HEIGHT}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps={FPS}')
-            run_progress([ffmpeg, '-v', 'error', *source, '-an', '-vf', fit,
+                source, pad = ['-f', 'lavfi', '-i', f'color=c=0x17212b:s=1280x720:r={FPS}'], ''
+            run_progress([ffmpeg, '-v', 'error', *source, '-an',
+                          '-vf', pad + f'scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,setsar=1,fps={FPS}',
                           '-frames:v', count, '-c:v', 'libx264', '-preset', look['preset'], '-crf', look['crf'],
                           '-pix_fmt', 'yuv420p',
                           '-threads', encode_threads(), temp / f'{i}.mp4'],
@@ -730,22 +701,7 @@ def export_episode(episode, output, still='', notify=lambda s: None, progress=la
         notify('音声と結合中')
         # 使う音声の区間(トリムで飛び飛びになることがある)
         parts_of_audio = episode.get('audio_parts') or [(float(episode.get('audio_start') or 0.0), episode['duration'])]
-        extra = []
-        if ending:
-            # ラジオの後ろに曲をつなぐ。形式の違う音どうしをつなげるよう、48kHz ステレオにそろえる。
-            # ラジオが話の長さより短くても曲の位置がずれないよう、話の長さまで無音で埋めてから曲を続ける
-            same = 'aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo'
-            audio_in = ['-i', episode['audio'], '-i', ending['path']]
-            chain = ''.join(f"[1:a]atrim=start={s:.4f}:duration={d:.4f},asetpts=N/SR/TB,{same}[a{i}];"
-                            for i, (s, d) in enumerate(parts_of_audio))
-            chain += ''.join(f'[a{i}]' for i in range(len(parts_of_audio)))
-            chain += (f'concat=n={len(parts_of_audio)}:v=0:a=1,apad=whole_dur={body:.4f},atrim=duration={body:.4f}[radio];'
-                      f'[2:a]{same},asetpts=N/SR/TB[song];[radio][song]concat=n=2:v=0:a=1[aout]')
-            audio_map = ['-map', '[aout]']
-            audio_filter = ['-filter_complex', chain]
-            # 動画クリッパーが、ここは曲だと分かるように(字幕や切り抜きの対象から外す)
-            extra = ['-metadata', f'comment=radio-sync ending={float(ending["seconds"]):.3f}']
-        elif len(parts_of_audio) == 1:
+        if len(parts_of_audio) == 1:
             start = float(parts_of_audio[0][0])
             audio_in = (['-ss', f'{start:.4f}'] if start > 0 else []) + ['-i', episode['audio']]
             audio_map = ['-map', '1:a:0']
@@ -760,8 +716,8 @@ def export_episode(episode, output, still='', notify=lambda s: None, progress=la
             audio_filter = ['-filter_complex', chain]
         run_progress([ffmpeg, '-v', 'error', '-f', 'concat', '-safe', '1', '-i', manifest,
                       *audio_in, *audio_filter, '-map', '0:v:0', *audio_map, '-c:v', 'copy',
-                      '-c:a', 'aac', '-b:a', '192k', '-t', full, *extra, '-movflags', '+faststart', intermediate],
-                     full, lambda f: progress(.97 + .03 * f), cancelled)
+                      '-c:a', 'aac', '-b:a', '192k', '-t', episode['duration'], '-movflags', '+faststart', intermediate],
+                     episode['duration'], lambda f: progress(.97 + .03 * f), cancelled)
         # Exclusive creation prevents accidental overwrite, including races.
         with output.open('xb') as dst, intermediate.open('rb') as src:
             shutil.copyfileobj(src, dst)

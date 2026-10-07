@@ -71,13 +71,11 @@ QUESTION_ENDS = ("でしょう", "でしょうか", "でしょう。", "です�
                  "かな", "かな。", "どっち", "どれ", "なに", "何", "?」")
 
 
-def _load_volumes(wav_path: str, limit: float = None) -> np.ndarray:
-    """WAVから1秒ごとの音量(RMS、0〜1正規化)を計算。limit(秒)があれば、そこまでだけを見る"""
+def _load_volumes(wav_path: str) -> np.ndarray:
+    """WAVから1秒ごとの音量(RMS、0〜1正規化)を計算"""
     with wave.open(wav_path) as wf:
         rate = wf.getframerate()
         data = np.frombuffer(wf.readframes(wf.getnframes()), dtype=np.int16)
-    if limit:
-        data = data[:int(limit * rate)]
     n_sec = max(len(data) // rate, 1)
     vols = np.array([
         np.sqrt(np.mean(data[i * rate:(i + 1) * rate].astype(np.float64) ** 2))
@@ -322,14 +320,13 @@ def _topic_candidates(segments: list, volumes, target: float) -> list:
 
 
 def detect_highlights(wav_path: str, segments, out_dir: str,
-                      clip_length: float = 30.0, n_clips: int = 5, limit: float = None) -> list:
+                      clip_length: float = 30.0, n_clips: int = 5) -> list:
     """盛り上がり上位 n_clips 区間を返す(重複しないようにずらす)
 
     segments: 文字起こし結果のリスト。None の場合は音声のみで判定
-    limit:    この秒数より後ろは選ばない(最後に付けたエンディング曲を、盛り上がりと取り違えないため)
     """
     print("      盛り上がり箇所を検出中...")
-    volumes = _load_volumes(wav_path, limit)
+    volumes = _load_volumes(wav_path)
     duration = len(volumes)
 
     def sliding():

@@ -10,7 +10,6 @@ import ipaddress
 import socket
 import http.server
 import json
-import math
 import os
 from pathlib import Path
 import queue
@@ -37,7 +36,6 @@ WEB = HERE / 'web'
 DATA = Path(os.environ.get('RADIO_SYNC_DATA') or (HERE / 'data'))
 PROXY = DATA / 'proxy'
 AUTOSAVE = DATA / 'autosave.json'
-ENDING = DATA / 'ending.json'  # 最後に使ったエンディング曲(新しいプロジェクトにも使う)
 INSTANCE = DATA / 'instance.json'
 LOG = DATA / 'server.log'
 PREFERRED_PORT = 8765
@@ -255,8 +253,6 @@ def pick(kind):
             result = dialog.askopenfilenames(parent=root, title='カメラ動画を選ぶ(複数選択できます)', filetypes=[video, everything])
         elif kind == 'still':
             result = dialog.askopenfilename(parent=root, title='映像がない所に表示する画像', filetypes=[('画像', '*.png *.jpg *.jpeg')])
-        elif kind == 'music':
-            result = dialog.askopenfilename(parent=root, title='最後に流すエンディング曲', filetypes=[audio, everything])
         elif kind == 'open':
             result = dialog.askopenfilename(parent=root, title='プロジェクトを開く', filetypes=[('プロジェクト', '*.json')])
         elif kind == 'save':
@@ -518,51 +514,8 @@ def state():
             saved = json.loads(AUTOSAVE.read_text(encoding='utf-8'))
         except ValueError:
             saved = None
-    return {'autosave': saved, 'ending': remembered_ending(),
-            'jobs': [j.view() for j in JOBS.values() if j.state == 'running' and j.kind != 'proxy']}
+    return {'autosave': saved, 'jobs': [j.view() for j in JOBS.values() if j.state == 'running' and j.kind != 'proxy']}
 
-
-# ---------- エンディング曲 ----------
-#
-# プロジェクトの 'ending'({'on', 'path'})に持つ。毎回同じ曲を使うことが多いので、最後に使ったものを
-# data/ending.json に覚えておき、まだ決めていないプロジェクト(新しいもの・以前のもの)ではそれを使う。
-
-def clean_ending(raw):
-    raw = raw if isinstance(raw, dict) else {}
-    return {'on': bool(raw.get('on')), 'path': str(raw.get('path') or '')}
-
-
-def remembered_ending():
-    try:
-        return clean_ending(json.loads(ENDING.read_text(encoding='utf-8')))
-    except (OSError, ValueError):
-        return clean_ending({})
-
-
-def remember_ending(body):
-    ending = clean_ending(body)
-    DATA.mkdir(exist_ok=True)
-    core.save(ending, ENDING)
-    if ending['path'] and Path(ending['path']).is_file():
-        ALLOWED.add(key(ending['path']))          # 画面で試聴できるように
-    return {'ending': ending}
-
-
-def ending_of(project):
-    """書き出しに使うエンディング曲。(曲 {'path', 'seconds'} か None, 見つからないファイルの一覧)"""
-    chosen = clean_ending(project['ending'] if isinstance(project.get('ending'), dict) else remembered_ending())
-    if not (chosen['on'] and chosen['path']):
-        return None, []
-    path = chosen['path']
-    if not Path(path).is_file():
-        return None, [path]
-    try:
-        seconds, streams = core.probe(path)
-    except (RuntimeError, ValueError, KeyError) as exc:
-        raise UserError(f'エンディング曲を読めませんでした: {Path(path).name}') from exc
-    if not any(s.get('codec_type') == 'audio' for s in streams) or seconds <= 0:
-        raise UserError(f'エンディング曲に音が入っていません: {Path(path).name}')
-    return {'path': path, 'seconds': round(seconds, 3)}, []
 
 def clear_autosave(body):
     AUTOSAVE.unlink(missing_ok=True)
@@ -645,8 +598,6 @@ def export_plan(body):
     folder = Path(body.get('folder') or '')
     if not folder.is_dir():
         raise UserError('書き出し先のフォルダが見つかりません。')
-    ending, missing_song = ending_of(project)
-    extra = ending['seconds'] if ending else 0.0
     items, used = [], set()
     for i, e in enumerate(project['episodes']):
         stem = Path(e['audio']).stem
@@ -659,7 +610,7 @@ def export_plan(body):
                 name = f'{base} ({n}).mp4'
             used.add(name.lower())
             items.append({'index': i, 'part': k - 1, 'parts': len(parts), 'name': name,
-                          'duration': part['duration'] + extra, 'renamed': n > 1})
+                          'duration': part['duration'], 'renamed': n > 1})
     durations = [x['duration'] for x in items] or [0]
     per_second = core.quality_of(body.get('quality'))['bytes']
     referenced = {e['audio'] for e in project['episodes']}
@@ -670,8 +621,7 @@ def export_plan(body):
     return {'items': items, 'stale': is_stale(), 'free': shutil.disk_usage(folder).free,
             'need': int((sum(durations) + 1.2 * max(durations)) * per_second),
             'sizes': [int(x['duration'] * per_second) for x in items],
-            'missing': sorted({p for p in referenced if not Path(p).is_file()} | set(missing_song)),
-            'ending': ending['seconds'] if ending else 0.0}
+            'missing': sorted(p for p in referenced if not Path(p).is_file())}
 
 
 def export(body):
@@ -683,9 +633,6 @@ def export(body):
     if still and not Path(still).is_file():
         raise UserError('映像がない所の画像が見つかりません。設定し直すか、外してください。')
     quality = body.get('quality') or project.get('quality')
-    ending, missing_song = ending_of(project)
-    if missing_song:
-        raise UserError('エンディング曲が見つかりません: ' + Path(missing_song[0]).name)
     parts_of = {}
     jobs = []
     for item in body.get('items') or []:
@@ -700,25 +647,23 @@ def export(body):
         if part >= len(parts):
             raise UserError('分ける位置が変わっています。「4 カット」を開き直してください。')
         jobs.append((parts[part], name))
-    extra = ending['seconds'] if ending else 0.0
-    total = sum(e['duration'] + extra for e, _ in jobs) or 1.0
+    total = sum(e['duration'] for e, _ in jobs) or 1.0
 
     def work(job):
         done, files = 0.0, []
         for n, (episode, name) in enumerate(jobs, 1):
             job.note(f'{n}/{len(jobs)} 個目を書き出し中: {name}')
-            core.export_episode(episode, folder / name, still, progress=lambda f, base=done, d=episode['duration'] + extra:
-                                job.report((base + f * d) / total), cancelled=job.cancel.is_set, quality=quality,
-                                ending=ending)
+            core.export_episode(episode, folder / name, still, progress=lambda f, base=done, d=episode['duration']:
+                                job.report((base + f * d) / total), cancelled=job.cancel.is_set, quality=quality)
             files.append(name)
-            record_export(folder / name, episode, extra)
-            done += episode['duration'] + extra
+            record_export(folder / name, episode)
+            done += episode['duration']
         return {'folder': str(folder), 'files': files}
 
     return {'job': start_heavy('export', work).id}
 
 
-def record_export(path, episode, ending=0.0):
+def record_export(path, episode):
     """Remember finished files (newest first) so the production hub can hand them to the next tool."""
     log = DATA / 'exports.json'
     try:
@@ -727,7 +672,7 @@ def record_export(path, episode, ending=0.0):
         entries = []
     entries = [e for e in entries if e.get('path') != str(path)]
     entries.insert(0, {'path': str(path), 'name': Path(path).name, 'audio': episode['audio'],
-                       'duration': episode['duration'] + ending, 'ending': ending, 'at': time.time()})
+                       'duration': episode['duration'], 'at': time.time()})
     DATA.mkdir(exist_ok=True)
     core.save(entries[:50], log)
 
@@ -764,7 +709,6 @@ POST = {
     '/api/cut/suggest': cut_suggest,
     '/api/export/plan': export_plan,
     '/api/export': export,
-    '/api/ending': remember_ending,
     '/api/cancel': cancel,
     '/api/open-folder': open_folder,
     '/api/lan': lan_toggle,

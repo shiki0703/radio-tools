@@ -1,10 +1,9 @@
 {
   "version": "2026.10.07",
-  "released": "2026-10-05",
+  "released": "2026-10-07",
   "notes": [
-    "Radio Sync:書き出しで、最後にエンディング曲を流せるようにしました(話の後ろに曲の長さだけ、カメラの映像を音なしで続けます)",
     "動画クリッパー:動画にロゴを重ねられるようにしました(場所はドラッグ、大きさはスライダーで変えられます)",
-    "動画クリッパー:エンディング曲の所には、字幕・見出し・切り抜きを付けないようにしました"
+    "動画クリッパー:エンディング動画をつなぐとき、本編の最後の2秒を徐々に暗くしてからつなぐようにしました"
   ],
   "check": "https://raw.githubusercontent.com/shiki0703/radio-tools/main/launcher/version.json",
   "download": "https://codeload.github.com/shiki0703/radio-tools/zip/refs/heads/main"

@@ -842,8 +842,8 @@ function renderSettings() {
         h('label', {}, 'オープニング・エンディング'),
         h('div', { class: 'bookends' },
           bookendRow('intro', 'オープニング', '本編の前につなぎます'),
-          bookendRow('outro', 'エンディング', '本編の後ろにつなぎます')),
-        h('p', { class: 'hint' }, '別に用意した動画を、テロップ付きの元動画の前後につなぎます(切り抜きには付きません)。大きさ・コマ数・音声は自動でそろえます。')),
+          bookendRow('outro', 'エンディング', '本編を徐々に暗くしてから、後ろにつなぎます')),
+        h('p', { class: 'hint' }, '別に用意した動画を、テロップ付きの元動画の前後につなぎます(切り抜きには付きません)。大きさ・コマ数・音声は自動でそろえます。エンディングの前は、本編の最後の2秒で映像を徐々に暗く・音を徐々に小さくしてからつなぎます。')),
       h('div', { class: 'field' },
         h('label', {}, 'ロゴ'),
         settingsLogo.el),
@@ -1639,7 +1639,7 @@ function chapterKeyDialog() {
   input.focus();
 }
 
-const CH_KIND_NOTE = { intro: 'オープニングの動画', outro: 'エンディング(動画・曲)' };
+const CH_KIND_NOTE = { intro: 'オープニングの動画', outro: 'エンディングの動画' };
 
 function chapterRow(c, i) {
   const d = CH.data;
