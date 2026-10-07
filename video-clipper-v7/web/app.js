@@ -1037,6 +1037,8 @@ async function openProject(name) {
     shift: typeof draft.shift === 'number' ? draft.shift : 0,
     style: JSON.parse(JSON.stringify(draft.style || project.style)),
     logo: { ...LOGO_DEFAULT, ...(draft.logo || project.settings.logo || {}) },
+    intro: typeof draft.intro === 'string' ? draft.intro : project.settings.intro || '',
+    outro: typeof draft.outro === 'string' ? draft.outro : project.settings.outro || '',
     main: true,
     clip: project.clips.length > 0,
   };
@@ -1056,7 +1058,7 @@ async function openProject(name) {
 function saveDraftSoon() {
   clearTimeout(draftTimer);
   const name = S.project.name;
-  draftTimer = setTimeout(() => api('/api/draft', { project: name, draft: { segs: S.edit.segs, titles: S.edit.titles, showTitles: S.edit.showTitles, shift: S.edit.shift, style: S.edit.style, logo: S.edit.logo } }).catch(() => {}), 1000);
+  draftTimer = setTimeout(() => api('/api/draft', { project: name, draft: { segs: S.edit.segs, titles: S.edit.titles, showTitles: S.edit.showTitles, shift: S.edit.shift, style: S.edit.style, logo: S.edit.logo, intro: S.edit.intro, outro: S.edit.outro } }).catch(() => {}), 1000);
 }
 
 function detachVideos() {
@@ -1370,8 +1372,52 @@ function renderReview() {
             h('span', {}, h('b', {}, f.name), ' ', h('span', { class: 'muted small' }, fmtSize(f.size))),
             h('button', { class: 'ghost', onclick: guard(() => api('/api/open', { path: f.path })) }, '場所を表示'))))
         : h('div', { class: 'empty' }, 'まだファイルはありません'),
-      h('p', { class: 'muted small' }, `保存場所: ${p.folder}`))));
+      h('p', { class: 'muted small' }, `保存場所: ${p.folder}`)),
+    p.has_captioned && reviewBookendCard(p)));
   reviewEditor?.update();
+}
+
+const bookendChanged = (p) => (S.edit.intro || '') !== (p.settings.intro || '') || (S.edit.outro || '') !== (p.settings.outro || '');
+
+/** 確認・修正:オープニング・エンディングを選び直す(元動画を作り直して、つなぎ直す) */
+function reviewBookendCard(p) {
+  const busy = S.job?.state === 'running';
+  const changed = bookendChanged(p);
+  const row = (kind, label, note) => {
+    const path = S.edit[kind] || '';
+    return h('div', { class: 'bookend' + (path ? ' on' : '') },
+      h('div', { class: 'be-name' }, h('b', {}, label), h('span', { class: 'muted small' }, path ? basename(path) : note)),
+      h('div', { class: 'row' },
+        h('button', {
+          disabled: busy,
+          onclick: guard(async () => {
+            const r = await api('/api/pick', { kind });
+            if (!r.path) return;
+            S.edit[kind] = r.path;
+            saveDraftSoon();
+            renderReview();
+          }),
+        }, path ? '選び直す' : '動画を選ぶ'),
+        path && h('button', { class: 'ghost', disabled: busy, onclick: () => { S.edit[kind] = ''; saveDraftSoon(); renderReview(); } }, '外す')));
+  };
+  return h('div', { class: 'card', style: 'display:grid;gap:12px' },
+    h('h3', {}, 'オープニング・エンディング'),
+    h('p', { class: 'muted small' }, '元動画の前後につなぐ動画を選び直せます(切り抜きには付きません)。'
+      + 'エンディングの前は、本編の最後の2秒で映像を徐々に暗く・音を徐々に小さくしてからつなぎます。'),
+    h('div', { class: 'bookends' },
+      row('intro', 'オープニング', '本編の前につなぎます'),
+      row('outro', 'エンディング', '本編を徐々に暗くしてから、後ろにつなぎます')),
+    h('div', { class: 'row' },
+      changed
+        ? h('span', { class: 'chip review' }, 'まだ動画に入っていません')
+        : h('span', { class: 'muted small' }, 'いまの動画と同じです'),
+      h('span', { style: 'flex:1' }),
+      !p.can_fix && h('span', { class: 'bad-text small' }, '作業用の動画が見つからないため作り直せません'),
+      h('button', {
+        class: 'primary', disabled: busy || !changed || !p.can_fix,
+        onclick: guard(() => startReburn({ mainOnly: true })),
+      }, '元動画を作り直してつなぐ ▶')),
+    h('p', { class: 'hint' }, 'テロップの焼き込みからやり直すため、元動画の長さに応じて数分かかります。上の「この内容で作り直す」でも反映されます。'));
 }
 
 /* ---------- YouTube の概要欄(チャプター) ---------- */
@@ -1854,9 +1900,15 @@ function renderChapters() {
   refreshChapterOutput();
 }
 
-async function startReburn() {
+async function startReburn(opts) {
   const p = S.project;
-  const targets = [S.edit.main && 'main', S.edit.clip && p.clips.length && 'clip'].filter(Boolean);
+  const mainOnly = opts?.mainOnly === true;     // 「元動画を作り直してつなぐ」
+  // オープニング・エンディングを替えたときは、元動画を作り直さないと入らない
+  if (!mainOnly && bookendChanged(p) && !S.edit.main) {
+    S.edit.main = true;
+    toast('オープニング・エンディングを替えたので、元動画も作り直します');
+  }
+  const targets = mainOnly ? ['main'] : [S.edit.main && 'main', S.edit.clip && p.clips.length && 'clip'].filter(Boolean);
   if (!targets.length) return toast('作り直す対象を1つ以上選んでください', 'warn');
   const segments = editedSegs();
   if (!segments.length) return toast('テロップの文字がすべて空です', 'warn');
@@ -1876,6 +1928,7 @@ async function startReburn() {
   await api('/api/reburn', {
     project: p.name, segments, style: S.edit.style, targets,
     titles: S.edit.titles.filter((t) => t.text.trim()), show_titles: S.edit.showTitles, logo: S.edit.logo,
+    intro: S.edit.intro || '', outro: S.edit.outro || '',
   });
   S.job = { state: 'running', kind: 'reburn', project: p.name, steps: [], step: -1, percent: 0, message: '準備しています…' };
   setStep('run');
