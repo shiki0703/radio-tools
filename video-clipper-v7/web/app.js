@@ -602,11 +602,23 @@ function captionEditor(opts) {
     title.addEventListener('pointerup', up);
   });
 
+  // テロップ・見出し・ロゴは、それぞれ開け閉めできる。閉じていても、今の設定の要点を見出しの横に出す
+  const fold = (id, name, info, open, ...body) => {
+    const box = h('details', { class: 'capfold', open: sectionOpen(id, open) },
+      h('summary', {}, h('b', {}, name), info),
+      h('div', { class: 'capfold-body' }, ...body));
+    box.addEventListener('toggle', () => rememberOpen(id, box.open));
+    return box;
+  };
+  const capInfo = h('span', { class: 'muted small' });
+  const titleInfo = h('span', { class: 'muted small' });
+  const logoInfo = h('span', { class: 'muted small' });
+
   const el = h('div', { class: 'captioner' },
     h('div', { class: 'controls' },
       h('div', { class: 'field', 'data-role': 'tabs' }, h('label', {}, '設定する動画'), tabs,
         h('p', { class: 'hint' }, 'テロップ・見出し・ロゴは、元動画と切り抜き動画で別々に設定できます。')),
-      h('b', { class: 'sub-head' }, 'テロップ'),
+      fold('cap-caption', 'テロップ', capInfo, true,
       h('div', { class: 'two' },
         h('div', { class: 'field' }, h('label', {}, 'フォント'), font),
         h('div', { class: 'field' }, h('label', {}, '文字サイズ'), h('div', { class: 'sizerow' }, size, sizeNum))),
@@ -620,11 +632,9 @@ function captionEditor(opts) {
           h('label', {}, '縁取り色(ボックスでは背景色)', ocolor),
           h('label', {}, h('span', {}, '縁取りの太さ ', outlineVal), outline),
           h('label', {}, h('span', {}, '影の強さ ', shadowVal), shadow),
-          h('label', { style: 'display:flex;gap:6px;align-items:center' }, bold, '太字にする'))),
-      titleField && h('b', { class: 'sub-head' }, '話題の見出し'),
-      titleField,
-      logoCtl && h('b', { class: 'sub-head' }, 'ロゴ'),
-      logoCtl && h('div', { class: 'field cap-logo-field' }, logoCtl.el)),
+          h('label', { style: 'display:flex;gap:6px;align-items:center' }, bold, '太字にする')))),
+      titleField && fold('cap-title', '話題の見出し', titleInfo, false, titleField),
+      logoCtl && fold('cap-logo', 'ロゴ', logoInfo, false, h('div', { class: 'field cap-logo-field' }, logoCtl.el))),
     h('div', { class: 'cap-side' }, preview, h('p', { class: 'hint' }, 'テロップ'
       + (titleField ? '・見出し' : '') + (logoCtl ? '・ロゴ' : '') + 'は、プレビューの上でドラッグして動かせます(テロップは中央に吸着します)。')));
 
@@ -665,6 +675,10 @@ function captionEditor(opts) {
     tOpacityVal.textContent = `${Math.round(c.t_bg_opacity * 100)}%`;
     tBold.checked = c.t_bold;
     for (const b of tSpots.querySelectorAll('button')) b.classList.toggle('on', b.dataset.p === c.t_pos);
+    const fontName = (k) => (S.fonts.find((f) => f.value === k)?.label || k).replace(/^.*[((]|[))]$/g, '');
+    capInfo.textContent = `${fontName(c.font)} ${c.size}・${PRESETS[c.preset]?.label || 'カスタム'}`;
+    titleInfo.textContent = titleOn
+      ? `${TITLE_SPOTS.find(([k]) => k === c.t_pos)?.[1] || '左上'}・${fontName(c.t_font)} ${c.t_size}` : '出さない';
     const vertical = target === 'clip' && opts.vertical();
     const thumb = opts.thumb();
     // Same shape as the finished video: 9:16 for vertical clips, otherwise the source's own ratio.
@@ -689,6 +703,7 @@ function captionEditor(opts) {
       s0.top = `${((1 - frac) / 2 + logo.y * frac) * 100}%`;
     }
     logoImg.classList.toggle('grab', showLogo && !!logoCtl && !vertical);
+    logoInfo.textContent = showLogo ? `重ねる(大きさ ${Math.round(logo.w * 100)}%)` : '重ねない';
     logoCtl?.update();
     // keep the label off a caption (or a logo) near the top
     tag.textContent = target === 'main' ? '元動画のイメージ' : vertical ? '切り抜き(縦 9:16)のイメージ' : '切り抜き(元動画と同じ比率)のイメージ';
@@ -843,9 +858,10 @@ function logoPanel(opts) {
     }
     slider.value = String(l.w * 100);
     sizeLabel.textContent = `${Math.round(l.w * 100)}%`;
-    note.textContent = (external ? 'プレビューのロゴをドラッグすると動かせます(元動画のプレビューで)。' : 'ロゴをドラッグすると動かせます。')
-      + 'テロップと見出しはロゴより上に出ます。元動画にも切り抜き動画にも同じ位置で入ります'
-      + '(縦の切り抜きでは、中央に置いた映像の中に入ります)。' + (opts.note || '')
+    note.textContent = (external ? 'プレビューのロゴをドラッグすると動かせます。テロップと見出しはロゴより上に出ます。'
+      + '元動画と切り抜き動画で、別々のロゴ・位置にできます(上の「設定する動画」で切り替え)。'
+      : 'ロゴをドラッグすると動かせます。テロップと見出しはロゴより上に出ます。元動画にも切り抜き動画にも同じ位置で入ります。')
+      + '縦の切り抜きでは、中央に置いた映像の中に入ります。' + (opts.note || '')
       + (l.on ? '' : ' いまは「ロゴを重ねる」が外れているため、動画には入りません。');
   }
 
