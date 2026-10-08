@@ -146,18 +146,35 @@ function Install-Ffmpeg {
 
 function Stop-RunningTools {
   $root = (Get-RootDir).ToLower()
-  $stopped = 0
+  $ids = @()
   foreach ($name in @('pythonw.exe', 'python.exe')) {
     try { $list = Get-CimInstance Win32_Process -Filter "Name = '$name'" -ErrorAction Stop } catch { continue }
     foreach ($p in $list) {
       $line = ($p.CommandLine + ' ' + $p.ExecutablePath).ToLower()
       if ($line -like "*$root*") {
-        try { Stop-Process -Id $p.ProcessId -Force -ErrorAction Stop; $stopped++ } catch {}
+        try { Stop-Process -Id $p.ProcessId -Force -ErrorAction Stop; $ids += $p.ProcessId } catch {}
       }
     }
   }
-  if ($stopped -gt 0) { Start-Sleep -Milliseconds 800 }
-  return $stopped
+  if ($ids.Count -gt 0) {
+    # 止めたツールが本当に終わるまで待つ(終わる前だと、記録のファイルなどがまだ使用中で入れ替えられない)
+    Wait-Process -Id $ids -Timeout 15 -ErrorAction SilentlyContinue
+    Start-Sleep -Milliseconds 500
+  }
+  return $ids.Count
+}
+
+function Remove-WithRetry([string]$Path) {
+  # ほかのプログラムが少しの間ファイルを開いていることがあるので、何度か待ってやり直す
+  for ($i = 1; $i -le 10; $i++) {
+    try {
+      if (Test-Path $Path) { Remove-Item $Path -Recurse -Force -ErrorAction Stop }
+      return
+    } catch {
+      if ($i -eq 10) { throw }
+      Start-Sleep -Seconds 1
+    }
+  }
 }
 
 # ---------- デスクトップのアイコン ----------

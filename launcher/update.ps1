@@ -63,7 +63,7 @@ try {
       $from = Join-Path $dst $k
       if (Test-Path $from) { Move-Item $from (Join-Path $park $k) -Force }
     }
-    if (Test-Path $dst) { Remove-Item $dst -Recurse -Force }
+    Remove-WithRetry $dst
     Copy-Item $new $dst -Recurse -Force
     foreach ($k in $KEEP) {
       $from = Join-Path $park $k
@@ -86,7 +86,7 @@ try {
       if (-not (Test-Path $src)) { continue }
       $dst = Join-Path $Root $name
       try {
-        if (Test-Path $dst) { Remove-Item $dst -Recurse -Force }
+        Remove-WithRetry $dst
         Copy-Item $src $dst -Recurse -Force
         $restored++
       } catch {}
