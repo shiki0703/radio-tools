@@ -496,9 +496,9 @@ function captionEditor(opts) {
   const tOn = h('input', { type: 'checkbox', onchange: (e) => { opts.setTitleOn?.(e.target.checked); update(); opts.onChange?.(); } });
   const tFont = h('select', { onchange: (e) => { cur().t_font = e.target.value; changed(); } },
     S.fonts.map((f) => h('option', { value: f.value }, f.label)));
-  const setTSize = (v) => { cur().t_size = Math.max(6, Math.min(40, Math.round(+v * 2) / 2 || 11)); changed(); };
-  const tSize = h('input', { type: 'range', min: 6, max: 30, step: 0.5, oninput: (e) => setTSize(e.target.value) });
-  const tSizeNum = h('input', { type: 'number', min: 6, max: 40, step: 0.5, onchange: (e) => setTSize(e.target.value) });
+  const setTSize = (v) => { cur().t_size = Math.max(6, Math.min(60, Math.round(+v * 2) / 2 || 11)); changed(); };
+  const tSize = h('input', { type: 'range', min: 6, max: 48, step: 0.5, oninput: (e) => setTSize(e.target.value) });
+  const tSizeNum = h('input', { type: 'number', min: 6, max: 60, step: 0.5, onchange: (e) => setTSize(e.target.value) });
   const tSpots = h('div', { class: 'switch tspots', style: 'grid-template-columns:repeat(5, 1fr)' }, TITLE_SPOTS.map(([k, label]) =>
     h('button', { 'data-p': k, onclick: () => { cur().t_pos = k; changed(); } }, label)));
   const tColor = h('input', { type: 'color', oninput: (e) => { cur().t_color = e.target.value.toUpperCase(); changed(); } });
@@ -522,9 +522,9 @@ function captionEditor(opts) {
     tBody) : null;
   const font = h('select', { onchange: (e) => { cur().font = e.target.value; changed(); } },
     S.fonts.map((f) => h('option', { value: f.value }, f.label)));
-  const setSize = (v) => { cur().size = Math.max(10, Math.min(48, Math.round(+v) || 18)); changed(); };
-  const size = h('input', { type: 'range', min: 10, max: 48, step: 1, oninput: (e) => setSize(e.target.value) });
-  const sizeNum = h('input', { type: 'number', min: 10, max: 48, step: 1, onchange: (e) => setSize(e.target.value) });
+  const setSize = (v) => { cur().size = Math.max(10, Math.min(80, Math.round(+v) || 18)); changed(); };
+  const size = h('input', { type: 'range', min: 10, max: 72, step: 1, oninput: (e) => setSize(e.target.value) });
+  const sizeNum = h('input', { type: 'number', min: 10, max: 80, step: 1, onchange: (e) => setSize(e.target.value) });
   const pos = h('div', { class: 'posgrid' }, POS_DEFS.map(([x, y]) =>
     h('button', { title: 'この位置へ移動', 'data-x': x, 'data-y': y, onclick: () => { cur().pos_x = x; cur().pos_y = y; changed(); } }, '●')));
   const presets = h('div', { class: 'presets' }, Object.entries(PRESETS).map(([k, p]) =>
@@ -549,9 +549,16 @@ function captionEditor(opts) {
   logoImg.addEventListener('load', () => update());
   const preview = h('div', { class: 'cap-preview' }, logoImg, tag, title, text);
   // ロゴ(元動画・切り抜き共通)。このプレビューの上で動かす
+  // ロゴを置く映像の範囲(プレビューに対する割合)。縦の切り抜きでは、中央に置いた映像の中
+  const logoFrame = () => {
+    if (!(target === 'clip' && opts.vertical())) return { top: 0, h: 1 };
+    // 映像は幅いっぱいに置かれ(src/clip.py の scale と pad)、高さは 9:16 の枠の 9 / (16 × 映像の横縦比)
+    const frac = Math.min(1, 9 / (16 * thumbRatio(opts.thumb(), update)));
+    return { top: (1 - frac) / 2, h: frac };
+  };
   const logoCtl = opts.saveLogo ? logoPanel({
     get: () => opts.logo(target), save: (logo) => opts.saveLogo(target, logo), thumb: opts.thumb, img: logoImg, stage: preview,
-    canDrag: () => !(target === 'clip' && opts.vertical()), onChange: () => update(), note: opts.logoNote,
+    frame: () => logoFrame(), onChange: () => update(),
   }) : null;
 
   text.addEventListener('pointerdown', (e) => {
@@ -635,8 +642,7 @@ function captionEditor(opts) {
           h('label', { style: 'display:flex;gap:6px;align-items:center' }, bold, '太字にする')))),
       titleField && fold('cap-title', '話題の見出し', titleInfo, false, titleField),
       logoCtl && fold('cap-logo', 'ロゴ', logoInfo, false, h('div', { class: 'field cap-logo-field' }, logoCtl.el))),
-    h('div', { class: 'cap-side' }, preview, h('p', { class: 'hint' }, 'テロップ'
-      + (titleField ? '・見出し' : '') + (logoCtl ? '・ロゴ' : '') + 'は、プレビューの上でドラッグして動かせます(テロップは中央に吸着します)。')));
+    h('div', { class: 'cap-side' }, preview, h('p', { class: 'hint' }, 'プレビューの上でドラッグして動かせます。')));
 
   function setTarget(t) {
     target = CAP_TARGET.now = t;
@@ -694,15 +700,13 @@ function captionEditor(opts) {
         logoImg.dataset.src = logo.path;
         logoImg.src = mediaUrl(logo.path);
       }
-      // 縦の切り抜きでは、中央に置いた映像の中に入る
-      const videoRatio = thumbRatio(thumb, update);
-      const frac = vertical ? Math.min(1, (9 / 16) * videoRatio) : 1;
+      const f = logoFrame();
       const s0 = logoImg.style;
       s0.left = `${logo.x * 100}%`;
       s0.width = `${logo.w * 100}%`;
-      s0.top = `${((1 - frac) / 2 + logo.y * frac) * 100}%`;
+      s0.top = `${(f.top + logo.y * f.h) * 100}%`;
     }
-    logoImg.classList.toggle('grab', showLogo && !!logoCtl && !vertical);
+    logoImg.classList.toggle('grab', showLogo && !!logoCtl);
     logoInfo.textContent = showLogo ? `重ねる(大きさ ${Math.round(logo.w * 100)}%)` : '重ねない';
     logoCtl?.update();
     // keep the label off a caption (or a logo) near the top
@@ -739,7 +743,7 @@ function logoHeight(logo, img, ratio) {
  * ロゴを選んで、ドラッグで動かし、スライダーで大きさを変える欄。
  * opts: get() -> ロゴの設定, save(ロゴの設定), thumb() -> 背景にする動画の1場面, onChange(), note
  *       img / stage を渡すと、そのプレビュー(テロップの見た目)の上のロゴを動かす(自分のプレビューは持たない)。
- *       canDrag() が偽のあいだは動かせない(縦の切り抜きのプレビューなど)
+ *       frame() … ロゴを置く映像の範囲 {top, h}(プレビューに対する割合。縦の切り抜きでは中央の一部)
  */
 function logoPanel(opts) {
   const cur = () => ({ ...LOGO_DEFAULT, ...(opts.get() || {}) });
@@ -750,22 +754,25 @@ function logoPanel(opts) {
   const name = h('div', { class: 'pathbox' });
   const pickBtn = h('button', { onclick: guard(pick) });
   const offBtn = h('button', { class: 'ghost', onclick: () => apply({ path: '', on: false }) }, '外す');
-  const slider = h('input', { type: 'range', class: 'logo-size', min: 3, max: 40, step: 0.5, 'aria-label': 'ロゴの大きさ' });
+  const slider = h('input', { type: 'range', class: 'logo-size', min: 3, max: 70, step: 0.5, 'aria-label': 'ロゴの大きさ' });
   const sizeLabel = h('span', { class: 'mono' });
   const note = h('p', { class: 'hint' });
-  const corner = (label, right, bottom) => h('button', {
+  // 決まった場所に寄せる。side は 'l'(左)・'c'(中央)・'r'(右)
+  const corner = (label, side, bottom) => h('button', {
     class: 'ghost',
     onclick: () => {
       const l = cur();
       const hgt = logoHeight(l, img, ratio());
-      apply({ x: round4(right ? 1 - l.w - LOGO_MARGIN.x : LOGO_MARGIN.x), y: round4(bottom ? 1 - hgt - LOGO_MARGIN.y : LOGO_MARGIN.y) });
+      const x = side === 'r' ? 1 - l.w - LOGO_MARGIN.x : side === 'c' ? (1 - l.w) / 2 : LOGO_MARGIN.x;
+      apply({ x: round4(x), y: round4(bottom ? 1 - hgt - LOGO_MARGIN.y : LOGO_MARGIN.y) });
     },
   }, label);
   const body = h('div', { class: 'logo-body' },
     !external && stage,
     h('div', { class: 'row' },
       h('span', {}, '大きさ'), slider, sizeLabel,
-      h('span', { class: 'corners' }, corner('左上', false, false), corner('右上', true, false), corner('左下', false, true), corner('右下', true, true))),
+      h('span', { class: 'corners' }, corner('左上', 'l', false), corner('中央上', 'c', false), corner('右上', 'r', false),
+        corner('左下', 'l', true), corner('右下', 'r', true))),
     note);
   const el = h('div', { class: 'logo-panel' },
     h('div', { class: 'row' }, h('label', { class: 'check logo-on' }, onBox, 'ロゴを重ねる'), name, pickBtn, offBtn),
@@ -781,16 +788,18 @@ function logoPanel(opts) {
     const r = await api('/api/pick', { kind: 'logo' });
     if (r.path) apply({ path: r.path, on: true });
   }
+  // 映像の範囲(frame。縦の切り抜きのプレビューでは中央の一部)に置く
+  const frame = () => opts.frame?.() || { top: 0, h: 1 };
   function place(l) {
+    const f = frame();
     img.style.left = `${l.x * 100}%`;
-    img.style.top = `${l.y * 100}%`;
+    img.style.top = `${(f.top + l.y * f.h) * 100}%`;
     img.style.width = `${l.w * 100}%`;
   }
 
   // ドラッグで動かす(画面の外には出さない)
   let drag = null;
   img.addEventListener('pointerdown', (ev) => {
-    if (opts.canDrag && !opts.canDrag()) return;
     ev.preventDefault();
     ev.stopPropagation();
     try { img.setPointerCapture(ev.pointerId); } catch { /* 外れてもドラッグは続く */ }
@@ -802,7 +811,7 @@ function logoPanel(opts) {
     const hgt = logoHeight(l, img, ratio());
     drag.now = { ...l,
       x: clampTo(l.x + (ev.clientX - drag.sx) / drag.box.width, 0, 1 - l.w),
-      y: clampTo(l.y + (ev.clientY - drag.sy) / drag.box.height, 0, Math.max(0, 1 - hgt)) };
+      y: clampTo(l.y + (ev.clientY - drag.sy) / (drag.box.height * frame().h), 0, Math.max(0, 1 - hgt)) };
     place(drag.now);
   });
   const drop = () => {
@@ -858,11 +867,9 @@ function logoPanel(opts) {
     }
     slider.value = String(l.w * 100);
     sizeLabel.textContent = `${Math.round(l.w * 100)}%`;
-    note.textContent = (external ? 'プレビューのロゴをドラッグすると動かせます。テロップと見出しはロゴより上に出ます。'
-      + '元動画と切り抜き動画で、別々のロゴ・位置にできます(上の「設定する動画」で切り替え)。'
-      : 'ロゴをドラッグすると動かせます。テロップと見出しはロゴより上に出ます。元動画にも切り抜き動画にも同じ位置で入ります。')
-      + '縦の切り抜きでは、中央に置いた映像の中に入ります。' + (opts.note || '')
-      + (l.on ? '' : ' いまは「ロゴを重ねる」が外れているため、動画には入りません。');
+    note.textContent = (external ? '' : 'ドラッグで動かせます。元動画と切り抜き動画に同じ位置で入ります。')
+      + (l.on ? '' : '「ロゴを重ねる」が外れているため、動画には入りません。');
+    note.hidden = !note.textContent;
   }
 
   update();
@@ -944,12 +951,11 @@ function renderSettings() {
         task('do_clip', '切り抜き作成', '盛り上がった場面を上位5か所、根拠つきで選んで切り抜きます。'))),
     settingsEditor && h('div', { class: 'card', style: 'display:grid;gap:12px' },
       h('h3', {}, 'テロップ・見出し・ロゴ'),
-      h('p', { class: 'muted small' }, '設定は次の動画でもそのまま使います(あとから「確認・修正」でも変えられます)。'),
+      h('p', { class: 'muted small' }, '設定は次の動画にも引き継ぎます。'),
       settingsEditor.el),
     settingsLogo && h('div', { class: 'card', style: 'display:grid;gap:12px' },
       h('h3', {}, 'ロゴ'),
-      h('p', { class: 'muted small' }, '番組ロゴなどの画像を、元動画と切り抜き動画に重ねます。一度選ぶと、次の動画でもそのまま使います。'
-        + 'あとから「確認・修正」でも変えられます。'),
+      h('p', { class: 'muted small' }, '番組ロゴなどの画像を、元動画と切り抜き動画に重ねます。'),
       settingsLogo.el),
     st.do_clip && h('div', { class: 'card', style: 'display:grid;gap:14px' },
       h('h3', {}, '切り抜きの設定'),
@@ -965,8 +971,8 @@ function renderSettings() {
               type: 'range', min: 10, max: 60, step: 5, value: st.clip_length,
               oninput: (e) => { st.clip_length = +e.target.value; $('clipLenLabel').textContent = `${st.clip_length}秒`; saveSettingsSoon(); },
             })))),
-      h('p', { class: 'hint' }, '話題のまとまりで切り出すため、実際の長さは目安の0.7〜2倍の間で前後します(話の途中で切れないようにするため)。'),
-      st.orientation === 'vertical' && h('p', { class: 'hint' }, '縦の切り抜きは、元の動画全体を中央に置き、上下を黒にします。')),
+      h('p', { class: 'hint' }, '話の途中で切れないよう、実際の長さは目安の0.7〜2倍になります。'
+        + (st.orientation === 'vertical' ? '縦は元の動画を中央に置き、上下を黒にします。' : ''))),
     h('div', { class: 'card', style: 'display:grid;gap:14px' },
       h('h3', {}, '仕上がり'),
       h('div', { class: 'tasks' },
@@ -978,31 +984,30 @@ function renderSettings() {
         h('div', { class: 'bookends' },
           bookendRow('intro', 'オープニング', '本編の前につなぎます'),
           bookendRow('outro', 'エンディング', '本編を徐々に暗くしてから、後ろにつなぎます')),
-        h('p', { class: 'hint' }, '別に用意した動画を、テロップ付きの元動画の前後につなぎます(切り抜きには付きません)。大きさ・コマ数・音声は自動でそろえます。エンディングの前は、本編の最後の2秒で映像を徐々に暗く・音を徐々に小さくしてからつなぎます。')),
+        h('p', { class: 'hint' }, '元動画の前後につなぎます(切り抜きには付きません)。エンディングの前は、本編を2秒かけて暗くします。')),
       st.do_transcribe && st.show_titles && h('div', { class: 'field' },
         h('label', {}, '見出しの作り方'),
         h('div', { class: 'switch', style: 'max-width:520px' },
           h('button', { class: st.title_maker !== 'words' ? 'on' : '', onclick: () => setOption('title_maker', 'ai') }, 'AI に作ってもらう'),
           h('button', { class: st.title_maker === 'words' ? 'on' : '', onclick: () => setOption('title_maker', 'words') }, '言葉を拾う(無料)')),
         h('p', { class: 'hint' }, st.title_maker === 'words'
-          ? '話の中によく出てくる言葉を見出しにします(「クモ」「南極」のような短い言葉)。'
+          ? '話によく出てくる言葉を見出しにします。'
           : S.hasKey
-            ? 'API キーがあるので、文字起こしのあと止まらずに Claude が見出しを作ります(35分の回で約20〜30円)。YouTube の概要欄も同時にできあがります。'
-            : '文字起こしが終わったところで一度止まります。依頼文を ChatGPT や claude.ai に貼り、返事を貼り付けて「続ける」を押すと、'
-              + 'その見出しで焼き込みます(作り直しは要りません)。YouTube の概要欄も同時にできあがります。')),
+            ? '文字起こしのあと、Claude が見出しと概要欄を作ります(35分の回で約20〜30円)。'
+            : '文字起こしのあと一度止まり、ChatGPT などで作った見出しで焼き込みます。概要欄も同時にできます。')),
       st.do_transcribe && st.show_titles && st.title_maker === 'words' && h('div', { class: 'field' },
         h('label', {}, '見出しの細かさ'),
         h('div', { class: 'switch', style: 'max-width:640px' },
           h('button', { class: st.title_scope === 'fine' ? 'on' : '', onclick: () => setOption('title_scope', 'fine') }, '話ごと'),
           h('button', { class: st.title_scope === 'corner' ? 'on' : '', onclick: () => setOption('title_scope', 'corner') }, 'コーナーごと'),
           h('button', { class: st.title_scope === 'whole' ? 'on' : '', onclick: () => setOption('title_scope', 'whole') }, '動画に1つ')),
-        h('p', { class: 'hint' }, '話ごと=1〜4分ごとに変わります。コーナーごと=3〜6分ごと。動画に1つ=その回のテーマをずっと出します。')),
+        h('p', { class: 'hint' }, '話ごと=1〜4分、コーナーごと=3〜6分で変わります。動画に1つ=その回のテーマをずっと出します。')),
       st.do_transcribe && h('div', { class: 'field' },
         h('label', {}, '文字起こしの精度'),
         h('div', { class: 'switch', style: 'max-width:520px' },
           h('button', { class: st.accuracy === 'standard' ? 'on' : '', onclick: () => setOption('accuracy', 'standard') }, '標準(速い)'),
           h('button', { class: st.accuracy === 'high' ? 'on' : '', onclick: () => setOption('accuracy', 'high') }, '高精度(1.5倍ほどの時間)')),
-        h('p', { class: 'hint' }, '仕上げには高精度をおすすめします(聞き取りにくい言葉の誤りが減ります)。高精度を初めて使うときだけ、AIモデル約1.6GBを自動でダウンロードします。'))),
+        h('p', { class: 'hint' }, '仕上げには高精度がおすすめです(初回だけ約1.6GBのモデルを取得します)。'))),
     h('div', { class: 'footer-nav' },
       h('span', { class: 'muted' }, running ? '別の処理が実行中です' : !(st.do_transcribe || st.do_clip) ? '処理内容を1つ以上選んでください' : ''),
       h('button', { onclick: () => setStep('video') }, '← 動画を選ぶ'),
@@ -1089,8 +1094,8 @@ function titlesWaitView(job) {
       }
       const long = longLabels(d.chapters);
       if (long.length) {
-        const fix = await ask('左上の見出しが長すぎます',
-          `${long.map((c) => `「${c.label}」(${labelWidth(c.label)}文字)`).join('、')} は、画面の左上で2行になります。`
+        const fix = await ask('画面の見出しが長すぎます',
+          `${long.map((c) => `「${c.label}」(${labelWidth(c.label)}文字)`).join('、')} は、2行になることがあります。`
           + `${LABEL_MAX}文字以内に直すと1行に収まります。`,
           [{ label: '直す', value: true, primary: true }, { label: 'このまま進める', value: false }]);
         if (fix) {
@@ -1136,8 +1141,7 @@ function titlesWaitView(job) {
       h('div', { class: 'spread' },
         h('b', {}, '文字起こしが終わりました。見出しを決めてから焼き込みます'),
         h('span', { class: 'chip review' }, '一時停止中')),
-      h('p', { class: 'muted small' }, '画面の左上に出す見出しと、YouTube の概要欄を、ここで一緒に作ります。'
-        + '焼き込む前に決めるので、あとで作り直す必要がありません。'),
+      h('p', { class: 'muted small' }, '画面の見出しと YouTube の概要欄を、ここで一緒に作ります。'),
       job.wait_note && h('div', { class: 'notice warn' }, job.wait_note),
       h('ol', { class: 'waitsteps' },
         h('li', {}, S.hasKey ? '「AI で作る」を押す(または「依頼文をコピー」して ChatGPT や claude.ai に貼って送る)'
@@ -1396,7 +1400,6 @@ function renderReview() {
     sample: () => S.edit.segs[activeLine]?.text || '',
     logo: (t) => (t === 'clip' ? S.edit.logoClip : S.edit.logo),
     saveLogo: (t, logo) => { if (t === 'clip') S.edit.logoClip = logo; else S.edit.logo = logo; saveDraftSoon(); },
-    logoNote: ' 変えたら、下の「この内容で作り直す」で動画に入ります。',
     onChange: saveDraftSoon,
   }) : null;
 
@@ -1414,10 +1417,9 @@ function renderReview() {
   };
   const lines = p.has_captioned ? h('div', { class: 'lines' }, S.edit.segs.map((s, i) => lineRow(i, playMain))) : null;
 
-  // 話題の見出し(左上)。自動で作ったものをここで直せる
+  // 話題の見出し。自動で作ったものをここで直せる
   const titlesBody = [
-    h('p', { class: 'muted small' }, 'いま何の話かを自動で付けています。おかしいものはここで直せます(空にするとその区間は出ません)。'
-      + ' 下の「YouTube の概要欄」で作った見出しを、ここに使うこともできます。'),
+    h('p', { class: 'muted small' }, '空にした区間は出ません。概要欄で作った見出しを使うこともできます。'),
     p.title_note && h('div', { class: 'notice warn' }, p.title_note),
     S.edit.titles.length
       ? h('div', { class: 'lines titles' }, S.edit.titles.map((t) => h('div', { class: 'line' },
@@ -1430,7 +1432,7 @@ function renderReview() {
               value: t.text, placeholder: '(空にすると出しません)', disabled: !S.edit.showTitles,
               oninput: (e) => { t.text = e.target.value; saveDraftSoon(); reviewEditor?.update(); },
             })))))
-      : h('div', { class: 'empty' }, '見出しはありません(処理のときに「話題の見出しを左上に出す」が切だった場合は、設定を入にしてもう一度処理してください)'),
+      : h('div', { class: 'empty' }, '見出しはありません。下の「YouTube の概要欄」で作って入れられます。'),
   ];
 
   const timing = h('div', { class: 'timing' },
@@ -1445,7 +1447,7 @@ function renderReview() {
       },
     }),
     h('span', { class: 'val mono' }, fmtShift(shift)),
-    h('p', { class: 'hint' }, 'テロップが音声より早い・遅いときに、全部まとめてずらします(＋で遅く)。下の「この内容で作り直す」で動画に反映され、ずらした分は各行の時刻に入るので、この目盛りは0に戻ります。'));
+    h('p', { class: 'hint' }, 'テロップ全体を早める・遅らせます(＋で遅く)。作り直すと各行の時刻に入り、目盛りは0に戻ります。'));
 
   const logoOn = S.edit.logo.on && S.edit.logo.path;
   $('view-review').replaceChildren(h('div', { class: 'page wide' },
@@ -1461,7 +1463,7 @@ function renderReview() {
     p.has_captioned && section('captions', 'テロップの確認・修正', {
       extra: changedCount > 0 && h('span', { class: 'chip review' }, `${changedCount} 行を修正中`),
     },
-      h('p', { class: 'muted small' }, '時刻のボタンでその箇所を再生します。行を選ぶと、分割・追加・削除と時刻の微調整ができます(Ctrl+Enterでもカーソル位置で分割)。Enterで次の行へ。直した内容は自動で保存されます。'),
+      h('p', { class: 'muted small' }, '時刻のボタンで再生します。行を選ぶと分割・追加・削除・時刻の微調整ができます(Ctrl+Enter で分割、Enter で次の行)。'),
       captionTools({
         project: p.name,
         segs: () => S.edit.segs,
@@ -1473,7 +1475,7 @@ function renderReview() {
       h('details', { class: 'adv', open: false },
         h('summary', {}, logoOn ? `テロップ・見出し・ロゴの見た目を変える(ロゴ: ${basename(S.edit.logo.path)})` : 'テロップ・見出し・ロゴの見た目を変える'),
         h('div', { style: 'margin-top:12px' }, reviewEditor.el))),
-    p.has_captioned && p.settings.do_transcribe && section('titles', '話題の見出し(画面の左上)', {
+    p.has_captioned && p.settings.do_transcribe && section('titles', '話題の見出し', {
       open: false,
       extra: [
         p.titles_by === 'ai' && h('span', { class: 'chip auto' }, 'AI で作成'),
@@ -1490,8 +1492,8 @@ function renderReview() {
       extra: h('span', { class: 'muted small' }, [S.edit.intro && 'OP あり', S.edit.outro && 'ED あり'].filter(Boolean).join('・') || 'つながない'),
     }, ...bookendBody()),
     clips.length > 0 && section('clips', '切り抜き候補', { open: false, extra: h('span', { class: 'muted small' }, `${clips.length} 本`) },
-      h('p', { class: 'muted small' }, '話題のまとまりごとに盛り上がりを見て選んでいます。動画の中の時間順に並べ、スコアの内訳が選ばれた理由です。'
-        + (p.has_captioned ? ' 切り抜きに入るテロップは、その場で直せます(直したら下の「この内容で作り直す」)。' : '')),
+      h('p', { class: 'muted small' }, '動画の中の時間順です。スコアの内訳が選ばれた理由です。'
+        + (p.has_captioned ? 'テロップはその場で直せます。' : '')),
       h('div', { class: 'clips' }, clips.map((c, i) => {
         const from = c.h.start || 0, to = c.h.end || 0;
         const clipVideo = h('video', { controls: true, playsinline: true, disablePictureInPicture: true, controlsList: 'nofullscreen nodownload noremoteplayback', preload: 'metadata', src: c.url });
@@ -1636,9 +1638,7 @@ function bookendBody() {
         path && h('button', { class: 'ghost', disabled: busy, onclick: () => { S.edit[kind] = ''; saveDraftSoon(); renderReview(); } }, '外す')));
   };
   return [
-    h('p', { class: 'muted small' }, '元動画の前後につなぐ動画を選び直せます(切り抜きには付きません)。'
-      + 'エンディングの前は、本編の最後の2秒で映像を徐々に暗く・音を徐々に小さくしてからつなぎます。'
-      + '選び直したら、下の「この内容で作り直す」で元動画に入ります。'),
+    h('p', { class: 'muted small' }, '元動画の前後につなぐ動画です(切り抜きには付きません)。'),
     h('div', { class: 'bookends' },
       row('intro', 'オープニング', '本編の前につなぎます'),
       row('outro', 'エンディング', '本編を徐々に暗くしてから、後ろにつなぎます')),
@@ -1674,7 +1674,7 @@ function chapterText(d) {
   return parts.join('\n\n');
 }
 
-// 左上の見出しは、この長さ(全角)までなら焼き込んだときに必ず1行に収まる
+// 画面の見出しは、この長さ(全角)までなら焼き込んだときに必ず1行に収まる
 const LABEL_MAX = 16;
 
 function labelWidth(text) {
@@ -1688,7 +1688,7 @@ function labelWidth(text) {
 
 const labelTooLong = (text) => labelWidth(text) > LABEL_MAX;
 
-/** 長すぎる左上の見出し(本編の行だけ) */
+/** 長すぎる画面の見出し(本編の行だけ) */
 const longLabels = (chapters) => chapters.filter((c) => (c.kind || 'body') === 'body' && labelTooLong(c.label));
 
 function chapterProblems(chapters) {
@@ -1702,7 +1702,7 @@ function chapterProblems(chapters) {
   });
   if (chapters.some((c) => !c.title.trim())) out.push('見出しが空の行があります。');
   for (const c of longLabels(chapters)) {
-    out.push(`左上の見出し「${c.label}」が長すぎます(${labelWidth(c.label)}文字)。${LABEL_MAX}文字以内に直すと1行に収まります。`);
+    out.push(`画面の見出し「${c.label}」が長すぎます(${labelWidth(c.label)}文字)。${LABEL_MAX}文字以内に直すと1行に収まります。`);
   }
   return out;
 }
@@ -1943,15 +1943,15 @@ function chapterRow(c, i) {
     kind === 'body'
       ? h('input', {
         class: 'clabel' + (labelTooLong(c.label) ? ' long' : ''), value: c.label || '',
-        placeholder: '左上の見出し', 'aria-label': '左上の見出し',
-        title: `動画の左上に出す短い見出し(${LABEL_MAX}文字以内で1行に収まります)`,
+        placeholder: '画面の見出し', 'aria-label': '画面の見出し',
+        title: `動画に出す短い見出し(${LABEL_MAX}文字以内で1行に収まります)`,
         oninput: (e) => {
           c.label = e.target.value;
           e.target.classList.toggle('long', labelTooLong(c.label));
           chapterEdited();
         },
       })
-      : h('span', { class: 'clabel cnone', title: '左上の見出しは本編だけに出します' }, CH_KIND_NOTE[kind]),
+      : h('span', { class: 'clabel cnone', title: '画面の見出しは本編だけに出します' }, CH_KIND_NOTE[kind]),
     h('button', {
       class: 'ghost del', title: kind === 'body' ? 'この見出しを消す' : `${CH_KIND_NOTE[kind]}をチャプターにしない`,
       disabled: kind === 'body' && bodyRows.length <= 1,
@@ -1984,8 +1984,7 @@ function addChapterRow() {
   $('chapCard')?.querySelectorAll('.chapline')[idx]?.querySelector('.ctitle')?.focus();
 }
 
-/** 概要欄の見出しを、左上に焼き込む見出しにする(反映は「この内容で作り直す」) */
-/** 概要欄の見出しから、左上に焼き込む見出し(本編の時刻)を作る */
+/** 概要欄の見出しから、画面に焼き込む見出し(本編の時刻)を作る */
 function titlesFromChapters(d, p) {
   const offset = d.offset || 0, bodyEnd = p.duration || (p.segments.at(-1)?.end ?? 0);
   const rows = d.chapters.filter((c) => (c.kind || 'body') === 'body' && c.title.trim());
@@ -1998,7 +1997,7 @@ function titlesFromChapters(d, p) {
 
 const titlesSig = (titles) => JSON.stringify(titles.filter((t) => t.text.trim()).map((t) => [Math.round(t.start), t.text.trim()]));
 
-/** 確認・修正で開いている結果の概要欄で、左上の見出しがまだ動画の見出しに入っていないか */
+/** 確認・修正で開いている結果の概要欄で、画面の見出しがまだ動画の見出しに入っていないか */
 function chaptersNotApplied() {
   const p = S.project, d = CH.data;
   if (S.step !== 'review' || !p?.has_captioned || !d || CH.project !== p.name || d.source === 'draft') return null;
@@ -2014,17 +2013,17 @@ function applyChapterTitles(want) {
   renderReview();
 }
 
-/** 返事を貼った・AI で作った直後に、左上の見出しにも入れるか聞く */
+/** 返事を貼った・AI で作った直後に、画面の見出しにも入れるか聞く */
 async function offerChapterTitles() {
   const want = chaptersNotApplied();
   if (!want) return;
-  const go = await ask('左上の見出しも、この内容にしますか?',
-    `概要欄の「左上の見出し」(${want.length}個)を、動画の左上に出す見出しにも入れます。`
+  const go = await ask('画面の見出しも、この内容にしますか?',
+    `概要欄の「画面の見出し」(${want.length}個)を、動画に出す見出しにも入れます。`
     + '動画に反映するには、このあと「この内容で作り直す」を押してください。',
     [{ label: '入れる', value: true, primary: true }, { label: 'あとで', value: false }]);
   if (!go) return;
   applyChapterTitles(want);
-  toast('左上の見出しに入れました。「この内容で作り直す」で動画に反映されます。', 'ok');
+  toast('画面の見出しに入れました。「この内容で作り直す」で動画に反映されます。', 'ok');
 }
 
 async function useChaptersForTitles() {
@@ -2033,8 +2032,8 @@ async function useChaptersForTitles() {
   if (!rows.length) return toast('見出しがありません', 'warn');
   const long = longLabels(d.chapters);
   if (long.length) {
-    const fix = await ask('左上の見出しが長すぎます',
-      `${long.map((c) => `「${c.label}」(${labelWidth(c.label)}文字)`).join('、')} は、画面の左上で2行になります。`
+    const fix = await ask('画面の見出しが長すぎます',
+      `${long.map((c) => `「${c.label}」(${labelWidth(c.label)}文字)`).join('、')} は、2行になることがあります。`
       + `${LABEL_MAX}文字以内に直すと1行に収まります。`,
       [{ label: '直す', value: true, primary: true }, { label: 'このまま進める', value: false }]);
     if (fix) {
@@ -2043,13 +2042,13 @@ async function useChaptersForTitles() {
     }
   }
 
-  const go = await ask('左上の見出しを置き換えますか?',
-    `今の「話題の見出し」を、ここの「左上の見出し」(${rows.length}個)に置き換えます。`
+  const go = await ask('画面の見出しを置き換えますか?',
+    `今の「話題の見出し」を、ここの「画面の見出し」(${rows.length}個)に置き換えます。`
     + '動画に反映するには、このあと「この内容で作り直す」を押してください。',
     [{ label: '置き換える', value: true, primary: true }, { label: 'やめる', value: false }]);
   if (!go) return;
   applyChapterTitles(titlesFromChapters(d, p));
-  toast('左上の見出しを置き換えました。「この内容で作り直す」で動画に反映されます。', 'ok');
+  toast('画面の見出しを置き換えました。「この内容で作り直す」で動画に反映されます。', 'ok');
 }
 
 function chaptersCard(p) {
@@ -2065,7 +2064,7 @@ function renderChapters() {
   const d = CH.data;
   const head = h('div', { class: 'card-head' },
     h('div', {},
-      h('p', { class: 'muted small' }, '時刻つきの見出し(チャプター)と主なトピックを作ります。「概要欄に貼る文」をコピーして、YouTube の概要欄に貼ってください。')),
+      h('p', { class: 'muted small' }, '「概要欄に貼る文」をコピーして、YouTube の概要欄に貼ってください。')),
     d && h('span', { class: 'chapsource' }));
   if (!d) {
     card.replaceChildren(head, CH.error ? h('div', { class: 'empty' }, CH.error) : h('div', { class: 'empty' }, '読み込んでいます…'));
@@ -2087,8 +2086,8 @@ function renderChapters() {
     }, '下書きに戻す'),
     h('button', { class: 'ghost small', disabled: busy, onclick: chapterKeyDialog }, d.has_key ? 'API キー' : 'API を使う'));
   const note = h('p', { class: 'hint' },
-    '「依頼文をコピー」して ChatGPT や claude.ai に貼って送り、返ってきた文を「返事を貼り付け」で読み込みます。'
-    + (d.has_key ? ' 「AI で作る(API)」は、文字起こしの文字だけを Claude に送ります(35分の回で約20〜30円)。' : ''));
+    '依頼文を ChatGPT などに貼って送り、返事を「返事を貼り付け」で読み込みます。'
+    + (d.has_key ? '「AI で作る(API)」は文字起こしの文字だけを送ります(35分の回で約20〜30円)。' : ''));
 
   const topics = h('input', {
     value: d.topics.join(' / '), placeholder: 'トピック / トピック / トピック', 'aria-label': '主なトピック',
@@ -2097,14 +2096,14 @@ function renderChapters() {
   const editor = h('div', { class: 'chapedit' },
     h('label', { class: 'chaplabel' }, '主なトピック(「 / 」で区切る)'), topics,
     h('div', { class: 'chaphead' },
-      h('span', {}), h('span', {}, '時刻'), h('span', {}, `見出し(${d.chapters.length}個)`), h('span', {}, '左上の見出し'), h('span', {})),
+      h('span', {}), h('span', {}, '時刻'), h('span', {}, `見出し(${d.chapters.length}個)`), h('span', {}, '画面の見出し'), h('span', {})),
     h('div', { class: 'chaplines' }, d.chapters.map(chapterRow)),
     h('button', { class: 'ghost addrow', onclick: addChapterRow }, '＋ 見出しを足す'),
     (d.offset > 0 || d.outro > 0) && h('p', { class: 'hint' },
-      'オープニング・エンディングをつないだ、できあがりの動画の時刻です。あとから付け替えても、時刻は自動でそろえます。'),
+      'オープニング・エンディング込みの時刻です。'),
     S.step === 'review' && S.project?.has_captioned && S.project.name === CH.project && h('div', { class: 'useforoverlay' },
-      h('button', { disabled: busy, onclick: useChaptersForTitles }, '左上の見出しに使う'),
-      h('span', { class: 'hint' }, '「左上の見出し」の列を、動画の左上に出す見出しにします。')));
+      h('button', { disabled: busy, onclick: useChaptersForTitles }, '画面の見出しに使う'),
+      h('span', { class: 'hint' }, '「画面の見出し」の列を、動画に出す見出しにします。')));
   const output = h('div', { class: 'chapout' },
     h('div', { class: 'spread' },
       h('label', { class: 'chaplabel' }, '概要欄に貼る文'),
@@ -2136,11 +2135,11 @@ async function startReburn() {
   if (!targets.length) return toast('作り直す対象を1つ以上選んでください', 'warn');
   const segments = editedSegs();
   if (!segments.length) return toast('テロップの文字がすべて空です', 'warn');
-  // 概要欄で作った左上の見出しが、まだ動画の見出しに入っていないまま作り直さないように
+  // 概要欄で作った画面の見出しが、まだ動画の見出しに入っていないまま作り直さないように
   const want = chaptersNotApplied();
   if (want && titlesSig(want) !== CH.keepSig) {
-    const ans = await ask('左上の見出しが、概要欄と違います',
-      '概要欄の「左上の見出し」が、まだ動画の左上の見出しに入っていません。入れてから作り直しますか?',
+    const ans = await ask('画面の見出しが、概要欄と違います',
+      '概要欄の「画面の見出し」が、まだ動画の見出しに入っていません。入れてから作り直しますか?',
       [{ label: '入れてから作り直す', value: 'apply', primary: true },
        { label: '今の見出しのまま', value: 'keep' },
        { label: 'やめる', value: null }]);
@@ -2162,7 +2161,7 @@ async function startReburn() {
 /* ---------- テロップをまとめて直す:一括置換・AI の誤字の候補・直し方の辞書 ---------- */
 //
 // 確認・修正の画面と、焼き込む前に止まっている画面の両方で使う。
-// ctx: { project: 結果の名前, segs(): 直すテロップの行({text}), titles(): 左上の見出し(無ければ null),
+// ctx: { project: 結果の名前, segs(): 直すテロップの行({text}), titles(): 画面の見出し(無ければ null),
 //        onChange(): 直したあとに画面を描き直す }
 
 const RP = { find: '', repl: '', scope: { segs: true, titles: true, chapters: true }, remember: false, undo: null };
@@ -2170,11 +2169,11 @@ const FX = { entries: null };
 
 const textField = (obj, k) => ({ get: () => String(obj[k] ?? ''), set: (v) => { obj[k] = v; } });
 
-/** 置換できるもの(テロップ・左上の見出し・概要欄)ごとの、文字の入れ物 */
+/** 置換できるもの(テロップ・画面の見出し・概要欄)ごとの、文字の入れ物 */
 function replaceTargets(ctx) {
   const out = [{ key: 'segs', label: 'テロップ', unit: '行', items: ctx.segs().map((s) => textField(s, 'text')) }];
   const titles = ctx.titles?.();
-  if (titles) out.push({ key: 'titles', label: '左上の見出し', unit: '個', items: titles.map((t) => textField(t, 'text')) });
+  if (titles) out.push({ key: 'titles', label: '画面の見出し', unit: '個', items: titles.map((t) => textField(t, 'text')) });
   const d = CH.project === ctx.project ? CH.data : null;
   if (d) {
     out.push({
@@ -2245,7 +2244,7 @@ function replaceBox(ctx) {
     scopes.replaceChildren(...replaceTargets(ctx).map((t) => h('label', { class: 'check' },
       h('input', { type: 'checkbox', checked: RP.scope[t.key], onchange: (e) => { RP.scope[t.key] = e.target.checked; refresh(); } }), t.label)));
     if (!RP.find) {
-      found.replaceChildren(h('span', { class: 'hint' }, '探す言葉を入れると、見つかった数と、直したあとの形を出します。'));
+      found.replaceChildren();
       return;
     }
     const parts = [];
@@ -2423,8 +2422,7 @@ function typoBox(ctx) {
       h('button', { onclick: guard(() => copyTypoPrompt(ctx)) }, '1. 依頼文をコピー'),
       h('button', { onclick: () => pasteTypoReply(ctx) }, '2. 返事を貼り付け'),
       aiBtn),
-    h('p', { class: 'hint' }, 'テロップに行番号を付けて AI に渡し、聞き間違いや変換の誤りを「誤 → 正」で挙げてもらいます。'
-      + '候補は1つずつ、直すか直さないかを選べます。' + (S.hasKey ? '「AI で探す(API)」は、テロップの文字だけを Claude に送ります。' : '')));
+    h('p', { class: 'hint' }, '聞き間違いや変換の誤りを AI に挙げてもらい、1つずつ選んで直します。'));
 }
 
 /* 直し方の辞書。覚えた言い方は、次の文字起こしのあとで自動で直す */
@@ -2436,8 +2434,7 @@ function dictBox(ctx) {
   const draw = () => {
     const entries = FX.entries;
     body.replaceChildren(
-      h('p', { class: 'hint' }, '覚えた言い方は、次からの文字起こしのあとで自動で直します(文字起こしにも、正しい言い方を出てきやすい言葉として伝えます)。'
-        + '一括置換や誤字の候補で「辞書に覚える」にチェックを付けても増えます。'),
+      h('p', { class: 'hint' }, '覚えた言い方は、次の文字起こしから自動で直します。'),
       entries == null ? h('div', { class: 'muted small' }, '読み込んでいます…')
         : entries.length ? h('div', { class: 'dictlist' }, entries.map((e) => h('div', { class: 'dictrow' },
             h('span', {}, e.from), h('span', { class: 'muted' }, '→'), h('b', {}, e.to),
@@ -2584,8 +2581,7 @@ function renderWaitCaptions() {
         },
       }))));
   card.replaceChildren(
-    h('p', { class: 'muted small' }, '焼き込む前に、テロップの文字を確かめて直せます。時刻のボタンでその箇所を再生します。'
-      + '空にした行は出しません。Enterで次の行へ。直した内容は自動で保存し、続けるときに使います。'),
+    h('p', { class: 'muted small' }, '時刻のボタンで再生します。空にした行は出ません。直した内容は自動で保存します。'),
     captionTools(ctx),
     h('div', { class: 'fix' }, video, h('div', { class: 'lines' }, rows)));
   refreshWaitChanged();

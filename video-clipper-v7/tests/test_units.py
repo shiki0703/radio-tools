@@ -378,7 +378,7 @@ class TestNormalizeStyle(unittest.TestCase):
 
     def test_clamps(self):
         s = normalize_style({"size": 999, "pos_y": 2.0, "outline": 99, "shadow": -3})
-        self.assertEqual(s["size"], 60.0)
+        self.assertEqual(s["size"], 80.0)
         self.assertEqual(s["pos_y"], 1.0)
         self.assertEqual(s["outline"], 10.0)
         self.assertEqual(s["shadow"], 0.0)

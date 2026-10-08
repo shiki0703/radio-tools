@@ -1,8 +1,10 @@
 {
-  "version": "2026.10.09.4",
+  "version": "2026.10.09.5",
   "released": "2026-10-09",
   "notes": [
-    "動画クリッパー:テロップ・話題の見出し・ロゴの設定を、それぞれ開け閉めできるようにしました(閉じていても、今の設定の要点が見えます)"
+    "動画クリッパー:縦の切り抜きでも、プレビューでロゴをドラッグできるようにしました(ロゴの表示位置のずれも直しました)",
+    "動画クリッパー:ロゴの位置に「中央上」を足し、テロップ・見出し・ロゴをもっと大きくできるようにしました",
+    "動画クリッパー:画面の説明文を短く、今の作りに合う内容に直しました"
   ],
   "check": "https://raw.githubusercontent.com/shiki0703/radio-tools/main/launcher/version.json",
   "download": "https://codeload.github.com/shiki0703/radio-tools/zip/refs/heads/main"

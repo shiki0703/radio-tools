@@ -93,7 +93,7 @@ def normalize_style(raw, base: dict = None) -> dict:
     if isinstance(size, str) and size in SIZE_MAP:   # 旧「小/中/大」との互換
         size = SIZE_MAP[size]
     try:
-        s["size"] = max(8.0, min(float(size), 60.0))
+        s["size"] = max(8.0, min(float(size), 80.0))
     except (TypeError, ValueError):
         pass
     for key in ("pos_x", "pos_y"):
@@ -123,7 +123,7 @@ def normalize_style(raw, base: dict = None) -> dict:
         s["t_size"] = round(min(s["size"], max(TITLE_SIZE_MIN, min(s["size"] * TITLE_SIZE_RATIO, TITLE_SIZE_MAX))), 1)
     if raw.get("t_font") in FONT_MAP:
         s["t_font"] = raw["t_font"]
-    for key, lo, hi in (("t_size", 6.0, 40.0), ("t_bg_opacity", 0.0, 1.0), ("t_mx", 0.0, 180.0), ("t_my", 0.0, 140.0)):
+    for key, lo, hi in (("t_size", 6.0, 60.0), ("t_bg_opacity", 0.0, 1.0), ("t_mx", 0.0, 180.0), ("t_my", 0.0, 140.0)):
         try:
             s[key] = max(lo, min(float(raw[key]), hi))
         except (KeyError, TypeError, ValueError):

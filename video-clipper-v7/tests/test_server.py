@@ -93,7 +93,7 @@ class ServerTest(unittest.TestCase):
         self.assertFalse(saved['do_clip'])
         self.assertEqual(saved['clip_length'], 120.0)
         self.assertEqual(saved['orientation'], 'horizontal')
-        self.assertLessEqual(saved['style']['main']['size'], 60)
+        self.assertLessEqual(saved['style']['main']['size'], 80)
         self.assertEqual(saved['style']['main']['color'], '#FFFFFF')
 
     def test_rejects_missing_and_non_video_files(self):
