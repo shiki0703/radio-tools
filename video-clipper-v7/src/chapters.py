@@ -400,6 +400,12 @@ def ask_claude(segments: list, api_key: str, client=None) -> dict:
 
     送るのは文字起こしの文字だけ。動画や音声は送らない。
     """
+    data = call_claude(INSTRUCTIONS, "--- 文字起こし ---\n" + transcript_text(segments), SCHEMA, api_key, client)
+    return {"topics": data.get("topics", []), "chapters": data.get("chapters", [])}
+
+
+def call_claude(system: str, text: str, schema: dict, api_key: str, client=None) -> dict:
+    """Claude に頼んで、schema の形の JSON をもらう(失敗は利用者に見せる説明つきの ChapterError)"""
     try:
         import anthropic
     except ImportError as exc:
@@ -413,9 +419,9 @@ def ask_claude(segments: list, api_key: str, client=None) -> dict:
             betas=["server-side-fallback-2026-07-01"],
             fallbacks="default",            # 断られたときは、別のモデルで自動でやり直してもらう
             output_config={"effort": "medium",
-                           "format": {"type": "json_schema", "schema": SCHEMA}},
-            system=INSTRUCTIONS,
-            messages=[{"role": "user", "content": "--- 文字起こし ---\n" + transcript_text(segments)}],
+                           "format": {"type": "json_schema", "schema": schema}},
+            system=system,
+            messages=[{"role": "user", "content": text}],
         )
     except anthropic.AuthenticationError as exc:
         raise ChapterError("API キーが正しくないようです。「API キーの設定」で入れ直してください。") from exc
@@ -441,4 +447,6 @@ def ask_claude(segments: list, api_key: str, client=None) -> dict:
         data = json.loads(text)
     except ValueError as exc:
         raise ChapterError("AI の返事を読み取れませんでした。もう一度お試しください。") from exc
-    return {"topics": data.get("topics", []), "chapters": data.get("chapters", [])}
+    if not isinstance(data, dict):
+        raise ChapterError("AI の返事を読み取れませんでした。もう一度お試しください。")
+    return data

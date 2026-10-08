@@ -198,12 +198,13 @@ def _get_model(model_size: str) -> WhisperModel:
     return _model_cache[model_size]
 
 
-def transcribe(audio_path: str, accuracy: str = "standard", on_progress=None):
+def transcribe(audio_path: str, accuracy: str = "standard", on_progress=None, hotwords: str = ""):
     """
     音声を文字起こしして、区間のリストを返す。
 
     accuracy: "standard"(速い) / "high"(高精度・低速)
     on_progress: 進捗(0.0〜1.0)を受け取るコールバック
+    hotwords: 出てきやすい言葉(辞書で覚えた正しい言い方。空白区切り)。認識のヒントにする
 
     Returns:
         [{"start": 開始秒, "end": 終了秒, "text": "セリフ"}, ...]
@@ -226,6 +227,7 @@ def transcribe(audio_path: str, accuracy: str = "standard", on_progress=None):
         condition_on_previous_text=False,
         # 2秒以上の無音の中に出てきた「幻の発話」を捨てる
         hallucination_silence_threshold=2.0,
+        hotwords=hotwords or None,
     )
 
     raw = []

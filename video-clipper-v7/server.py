@@ -46,6 +46,7 @@ from src.title import make_topic_titles  # noqa: E402
 from src.bookend import attach as attach_bookend  # noqa: E402
 from src.clip import cut_clips  # noqa: E402
 from src import chapters as chap  # noqa: E402
+from src import fixes  # noqa: E402
 from src.logo import clean_logo, DEFAULT_LOGO, IMAGE_EXT  # noqa: E402
 
 WEB = HERE / 'web'
@@ -54,6 +55,7 @@ RESULTS = HERE / 'results'
 THUMBS = DATA / 'thumbs'
 LOGOS = DATA / 'logos'        # 選んだロゴの画像の控え
 SETTINGS = DATA / 'settings.json'
+FIXES = DATA / 'fixes.json'         # 直し方の辞書(誤 → 正。次の文字起こしで自動で直す)
 SECRETS = DATA / 'secrets.json'     # AI に使う API キー(この PC の中だけ。画面には返さない)
 INSTANCE = DATA / 'instance.json'
 LOG = DATA / 'server.log'
@@ -66,7 +68,7 @@ TYPES = {'.mp4': 'video/mp4', '.m4v': 'video/mp4', '.mov': 'video/mp4', '.webm':
          '.png': 'image/png', '.srt': 'text/plain; charset=utf-8', '.json': 'application/json; charset=utf-8',
          '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8'}
 CLIP_STYLE = dict(DEFAULT_STYLE, pos_y=0.78)
-DEFAULT_SETTINGS = {'do_transcribe': True, 'do_clip': True, 'accuracy': 'standard', 'hq': False, 'show_titles': False, 'title_scope': 'corner', 'title_maker': 'ai', 'intro': '', 'outro': '',
+DEFAULT_SETTINGS = {'do_transcribe': True, 'do_clip': True, 'accuracy': 'standard', 'hq': False, 'show_titles': False, 'check_captions': False, 'title_scope': 'corner', 'title_maker': 'ai', 'intro': '', 'outro': '',
                     'logo': DEFAULT_LOGO, 'orientation': 'horizontal', 'clip_length': 30, 'style': {'main': DEFAULT_STYLE, 'clip': CLIP_STYLE}}
 
 CGNAT = ipaddress.ip_network('100.64.0.0/10')    # 回線側 NAT の中(モバイル回線などで使われる)
@@ -86,8 +88,9 @@ LOG_STREAM = [sys.stderr]
 
 JOB = {'state': 'idle', 'kind': '', 'project': '', 'steps': [], 'step': -1, 'percent': 0, 'message': '',
        'started': 0.0, 'error': '', 'hint': '', 'detail': '',
-       'wait': '', 'wait_note': '', 'paused': 0.0}   # wait='titles' … 見出しを作ってもらうのを待っている
-# 見出しを待っているあいだ、画面からの「続ける」を受け取る
+       'wait': '', 'wait_note': '', 'paused': 0.0}
+# wait='titles' … 見出しを作ってもらうのを待っている / 'captions' … 焼き込む前のテロップの確認を待っている
+# 待っているあいだ、画面からの「続ける」を受け取る
 TITLE_GO = threading.Event()
 TITLE_REPLY = {}
 WEIGHTS = []
@@ -169,6 +172,7 @@ def clean_settings(raw):
         'accuracy': raw.get('accuracy') if raw.get('accuracy') in ('standard', 'high') else 'standard',
         'hq': bool(raw.get('hq', False)),
         'show_titles': bool(raw.get('show_titles', False)),
+        'check_captions': bool(raw.get('check_captions', False)),
         'title_scope': raw.get('title_scope') if raw.get('title_scope') in ('fine', 'corner', 'whole') else 'corner',
         'title_maker': raw.get('title_maker') if raw.get('title_maker') in ('ai', 'words') else 'ai',
         'intro': clean_clip_path(raw.get('intro')),
@@ -412,11 +416,19 @@ def run_process(project):
         if settings['do_transcribe']:
             from src.transcribe import transcribe  # loads the speech model library only when needed
             progress('文字起こし', 0, '音声を文字起こししています(初回はAIモデルの取得で数分かかります)')
-            segments = transcribe(wav, accuracy=settings['accuracy'],
+            entries = fixes.load_dict(FIXES)
+            segments = transcribe(wav, accuracy=settings['accuracy'], hotwords=fixes.hotwords(entries),
                                   on_progress=lambda f: progress('文字起こし', f, f'音声を文字起こししています({round(f * 100)}%)'))
-            project['segments'] = segments
+            segments, fixed = fixes.apply_dict(segments, entries)
+            if fixed:
+                log(f'辞書のとおりに {fixed} か所を直しました')
+            project.update(segments=segments, dict_fixed=fixed)
+            TITLE_REPLY.clear()
             if settings['show_titles']:
                 project['titles'] = topic_titles(project, segments)
+            if settings.get('check_captions') and not TITLE_REPLY:
+                wait_for_titles(project, segments, '', kind='captions')    # 見出しで止まっていなければ、ここで止める
+            segments = project['segments']                                 # 止まっている間に直したテロップ
             save_project(project)
             burn(project, segments, 'テロップ焼き込み', '字幕を動画に焼き込んでいます')
         if settings['do_clip']:
@@ -468,12 +480,18 @@ def topic_titles(project, segments):
     return wait_for_titles(project, segments, note)
 
 
-def wait_for_titles(project, segments, note):
-    """画面で見出し(概要欄)が作られるのを待つ。中止されたら止める"""
+def wait_for_titles(project, segments, note, kind='titles'):
+    """焼き込む前に止めて、画面で見出し(概要欄)を作ってもらう・テロップを確かめてもらう。中止されたら止める。
+
+    kind='titles' … 見出しを待つ(テロップも直せる) / 'captions' … テロップの確認だけを待つ(見出しは返さない)。
+    画面で直したテロップは project['segments'] に入れる。
+    """
     TITLE_GO.clear()
     TITLE_REPLY.clear()
-    save_project(project)                 # 文字起こしは保存しておく(画面の概要欄がこれを読む)
-    JOB.update(wait='titles', wait_note=note, message='見出しを作ってください(下の手順)')
+    project['draft'] = None
+    save_project(project)                 # 文字起こしは保存しておく(画面の概要欄・テロップの一覧がこれを読む)
+    JOB.update(wait=kind, wait_note=note,
+               message='見出しを作ってください(下の手順)' if kind == 'titles' else '焼き込む前に、テロップを確かめてください')
     since = time.time()
     try:
         while not TITLE_GO.wait(0.5):
@@ -482,6 +500,10 @@ def wait_for_titles(project, segments, note):
     finally:
         JOB.update(wait='', wait_note='', paused=JOB.get('paused', 0.0) + time.time() - since)
     reply = dict(TITLE_REPLY)
+    if isinstance(reply.get('segments'), list):
+        project['segments'] = segments = clean_segments(reply['segments'], segments)
+    if kind != 'titles':
+        return None
     if reply.get('mode') == 'chapters':
         titles = chap.overlay_titles(reply['chapters'], body_seconds(project))
         if titles:
@@ -492,18 +514,26 @@ def wait_for_titles(project, segments, note):
 
 
 def titles_continue(body):
-    """「この見出しで続ける」「言葉を拾う方式で続ける」"""
-    if JOB['wait'] != 'titles' or JOB['project'] != body.get('project'):
-        raise UserError('いまは見出しを待っていません。画面を開き直してください。')
-    if body.get('mode') == 'chapters':
+    """「この見出しで続ける」「言葉を拾う方式で続ける」「このテロップで焼き込む」"""
+    if JOB['wait'] not in ('titles', 'captions') or JOB['project'] != body.get('project'):
+        raise UserError('いまは止まっていません。画面を開き直してください。')
+    reply = {}
+    if isinstance(body.get('segments'), list):
+        if not clean_segments(body['segments'], []):
+            raise UserError('テロップの文字がすべて空です。')
+        reply['segments'] = body['segments']
+    if JOB['wait'] == 'captions':
+        pass
+    elif body.get('mode') == 'chapters':
         chapters_save(body)
         saved = load_chapters(load_project(body.get('project'))) or {}
         rows = [c for c in saved.get('chapters', []) if c['title'].strip()]
         if not rows:
             raise UserError('見出しがありません。作ってから続けるか、「言葉を拾う方式で続ける」を選んでください。')
-        TITLE_REPLY.update(mode='chapters', chapters=rows, source=saved.get('source', 'edit'))
+        reply.update(mode='chapters', chapters=rows, source=saved.get('source', 'edit'))
     else:
-        TITLE_REPLY.update(mode='words')
+        reply.update(mode='words')
+    TITLE_REPLY.update(reply, done=True)
     JOB['message'] = '焼き込みを続けています'
     TITLE_GO.set()
     return {'ok': True}
@@ -801,6 +831,61 @@ def chapters_reset(body):
     return chapters_get(body)
 
 
+# ---------- テロップの直し(誤字の候補・辞書) ----------
+#
+# 候補は画面の行番号(1から)で返す。どれを採用するかは画面で選び、テロップは画面の中で直す。
+
+def caption_lines(body):
+    lines = body.get('lines')
+    if not isinstance(lines, list) or not any(str(t or '').strip() for t in lines):
+        raise UserError('テロップがありません。')
+    return [str(t or '') for t in lines][:20000]
+
+
+def typos_prompt(body):
+    """ChatGPT や claude.ai に貼る、誤字を探してもらう依頼文"""
+    return {'text': fixes.typo_prompt(caption_lines(body))}
+
+
+def typos_paste(body):
+    try:
+        return {'fixes': fixes.parse_typos(body.get('text'), int(body.get('count') or 0))}
+    except fixes.ChapterError as exc:
+        raise UserError(str(exc)) from exc
+
+
+def typos_ai(body):
+    lines = caption_lines(body)
+    if not api_key():
+        raise UserError('API キーが設定されていません。「依頼文をコピー」して ChatGPT などに貼る方法で探せます。')
+    try:
+        found = fixes.ask_typos(lines, api_key())
+    except fixes.ChapterError as exc:
+        raise UserError(str(exc)) from exc
+    log(f'誤字の候補を AI で探しました({len(found)}個)')
+    return {'fixes': found}
+
+
+def fixes_list(body=None):
+    return {'entries': fixes.load_dict(FIXES)}
+
+
+def fixes_add(body):
+    """辞書に覚える(同じ「誤」は新しい「正」で置き換える)"""
+    pairs = body.get('entries') if isinstance(body.get('entries'), list) else []
+    added = fixes.clean_entries(pairs)
+    if not added:
+        raise UserError('覚える言い方がありません。')
+    save_json({'entries': fixes.clean_entries(fixes.load_dict(FIXES) + added)}, FIXES)
+    return fixes_list()
+
+
+def fixes_remove(body):
+    wrong = str(body.get('from') or '')
+    save_json({'entries': [e for e in fixes.load_dict(FIXES) if e['from'] != wrong]}, FIXES)
+    return fixes_list()
+
+
 # ---------- screens ----------
 
 def project_view(name):
@@ -814,9 +899,12 @@ def project_view(name):
                           'url': media_url(folder / f) + stamp})
     allow_logo(clean_logo(project['settings'].get('logo')))
     allow_logo(clean_logo((project.get('draft') or {}).get('logo')))     # 確認・修正で選び直したロゴ
+    work = project.get('work_video') or ''
+    if work and Path(work).is_file():
+        ALLOWED.add(key(work))         # 焼き込む前の確認で、テロップの箇所を再生する
     return {**project, 'folder': str(folder), 'files': files, 'source_exists': Path(project['source']).is_file(),
             'lead': intro_seconds(project) if project.get('has_captioned') else 0.0,
-            'can_fix': bool(project.get('work_video')) and Path(project['work_video']).is_file()}
+            'can_fix': bool(work) and Path(work).is_file(), 'work_url': media_url(work) if work and Path(work).is_file() else ''}
 
 
 def save_draft(body):
@@ -1064,6 +1152,12 @@ POST = {
     '/api/chapters/reset': chapters_reset,
     '/api/apikey': set_api_key,
     '/api/titles-continue': titles_continue,
+    '/api/typos/prompt': typos_prompt,
+    '/api/typos/paste': typos_paste,
+    '/api/typos/ai': typos_ai,
+    '/api/fixes': fixes_list,
+    '/api/fixes/add': fixes_add,
+    '/api/fixes/remove': fixes_remove,
 }
 
 

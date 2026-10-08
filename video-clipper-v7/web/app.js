@@ -861,7 +861,9 @@ function renderSettings() {
       h('div', { class: 'tasks' },
         task('hq', '画質優先モード', '元動画の解像度を保ち、より高画質に出力します。時間がかかり、ファイルも大きくなります。'),
         st.do_transcribe && task('show_titles', '話題の見出しを左上に出す',
-          '「いま何の話か」を短い言葉で画面の左上に表示します(元動画・切り抜きの両方)。自動で作るので、あとから直せます。')),
+          '「いま何の話か」を短い言葉で画面の左上に表示します(元動画・切り抜きの両方)。自動で作るので、あとから直せます。'),
+        st.do_transcribe && task('check_captions', '焼き込む前にテロップを確かめる',
+          '文字起こしのあと一度止まり、テロップの文字を直してから焼き込みます(一括置換や、AI に誤字を探してもらうこともできます)。作り直しが要りません。')),
       h('div', { class: 'field' },
         h('label', {}, 'オープニング・エンディング'),
         h('div', { class: 'bookends' },
@@ -913,7 +915,7 @@ function renderRun() {
   const job = S.job || { state: 'idle' };
   const title = job.kind === 'reburn' ? '作り直しています…' : '処理しています…';
   let body;
-  const waiting = job.state === 'running' && job.wait === 'titles';
+  const waiting = job.state === 'running' && (job.wait === 'titles' || job.wait === 'captions');
   if (waiting) {
     body = titlesWaitView(job);
   } else if (job.state === 'running') {
@@ -957,10 +959,17 @@ function renderRun() {
   updateProgress();
 }
 
-/** 文字起こしが終わって止まっているときの画面。ここで作った見出しで焼き込む */
+/**
+ * 文字起こしが終わって止まっているときの画面。
+ * wait='titles' … 見出し(概要欄)を作り、その見出しで焼き込む(テロップも直せる)
+ * wait='captions' … テロップを確かめて直してから焼き込む
+ */
 function titlesWaitView(job) {
+  const onlyCaptions = job.wait === 'captions';
   const go = guard(async (mode) => {
     const d = CH.data;
+    const segments = waitSegments(job);
+    if (segments && !segments.some((s) => s.text)) return toast('テロップの文字がすべて空です', 'warn');
     if (mode === 'chapters') {
       if (!d || !d.chapters.some((c) => c.title.trim())) return toast('見出しがありません', 'warn');
       if (d.source === 'draft') {
@@ -982,18 +991,37 @@ function titlesWaitView(job) {
       }
     }
     clearTimeout(CH.saveTimer);
+    clearTimeout(W.saveTimer);
     await api('/api/titles-continue', {
-      project: job.project, mode,
+      project: job.project, mode, segments,
       ...(mode === 'chapters' ? { topics: d.topics, chapters: d.chapters, source: d.source } : {}),
     });
-    toast(mode === 'chapters' ? 'この見出しで焼き込みを続けます' : '言葉を拾う方式で焼き込みを続けます');
+    toast(onlyCaptions ? 'このテロップで焼き込みます'
+      : mode === 'chapters' ? 'この見出しで焼き込みを続けます' : '言葉を拾う方式で焼き込みを続けます');
+    W.project = '';
     poll();
   });
   const stop = guard(async () => {
-    const yes = await ask('処理を中止しますか?', '文字起こしの結果は保存されています。',
+    const yes = await ask('処理を中止しますか?', '文字起こしの結果は保存されています(ここで直したテロップは使われません)。',
       [{ label: '中止する', value: true, danger: true }, { label: '続ける', value: false }]);
     if (yes) await api('/api/cancel', {});
   });
+  if (onlyCaptions) {
+    return h('div', { style: 'display:grid;gap:14px' },
+      h('div', { class: 'card', style: 'display:grid;gap:10px' },
+        h('div', { class: 'spread' },
+          h('b', {}, '文字起こしが終わりました。テロップを確かめてから焼き込みます'),
+          h('span', { class: 'chip review' }, '一時停止中')),
+        h('p', { class: 'muted small' }, '焼き込む前に直すので、あとで作り直す必要がありません。'),
+        h('ol', { class: 'waitsteps' },
+          h('li', {}, 'テロップを見て、おかしいところを直す(「まとめて直す」で一括置換や、AI に誤字を探してもらうこともできます)'),
+          h('li', {}, 'いちばん下の「このテロップで焼き込む」'))),
+      waitCaptionsCard(job),
+      h('div', { class: 'card waitgo' },
+        h('button', { class: 'primary big', onclick: () => go('captions') }, 'このテロップで焼き込む ▶'),
+        h('span', { style: 'flex:1' }),
+        h('button', { class: 'danger', onclick: stop }, '中止')));
+  }
   return h('div', { style: 'display:grid;gap:14px' },
     h('div', { class: 'card', style: 'display:grid;gap:10px' },
       h('div', { class: 'spread' },
@@ -1006,8 +1034,9 @@ function titlesWaitView(job) {
         h('li', {}, S.hasKey ? '「AI で作る」を押す(または「依頼文をコピー」して ChatGPT や claude.ai に貼って送る)'
           : '「依頼文をコピー」を押して、ChatGPT や claude.ai に貼って送る'),
         !S.hasKey && h('li', {}, '返事が来たら、まるごとコピーして「返事を貼り付け」'),
-        h('li', {}, '見出しを確かめて、いちばん下の「この見出しで続ける」'))),
+        h('li', {}, '見出しを確かめて、いちばん下の「この見出しで続ける」(テロップも、下の「テロップの確認」で直せます)'))),
     chaptersCard({ name: job.project }),
+    waitCaptionsCard(job),
     h('div', { class: 'card waitgo' },
       h('button', { class: 'primary big', onclick: () => go('chapters') }, 'この見出しで続ける ▶'),
       h('button', { onclick: () => go('words') }, '言葉を拾う方式で続ける'),
@@ -1320,6 +1349,12 @@ function renderReview() {
       extra: changedCount > 0 && h('span', { class: 'chip review' }, `${changedCount} 行を修正中`),
     },
       h('p', { class: 'muted small' }, '時刻のボタンでその箇所を再生します。行を選ぶと、分割・追加・削除と時刻の微調整ができます(Ctrl+Enterでもカーソル位置で分割)。Enterで次の行へ。直した内容は自動で保存されます。'),
+      captionTools({
+        project: p.name,
+        segs: () => S.edit.segs,
+        titles: () => S.edit.titles,
+        onChange: () => { saveDraftSoon(); renderReview(); },
+      }),
       h('div', { class: 'fix' }, video, lines),
       timing,
       h('details', { class: 'adv', open: false },
@@ -1973,6 +2008,7 @@ function renderChapters() {
     busy && h('div', { class: 'notice' }, h('span', { class: 'spinner' }), CH.busy),
     h('div', { class: 'chapgrid' + (busy ? ' busy' : '') }, editor, output)].filter(Boolean));
   refreshChapterOutput();
+  RP.refresh?.();
 }
 
 async function startReburn() {
@@ -2009,6 +2045,438 @@ async function startReburn() {
   poll();
 }
 
+/* ---------- テロップをまとめて直す:一括置換・AI の誤字の候補・直し方の辞書 ---------- */
+//
+// 確認・修正の画面と、焼き込む前に止まっている画面の両方で使う。
+// ctx: { project: 結果の名前, segs(): 直すテロップの行({text}), titles(): 左上の見出し(無ければ null),
+//        onChange(): 直したあとに画面を描き直す }
+
+const RP = { find: '', repl: '', scope: { segs: true, titles: true, chapters: true }, remember: false, undo: null };
+const FX = { entries: null };
+
+const textField = (obj, k) => ({ get: () => String(obj[k] ?? ''), set: (v) => { obj[k] = v; } });
+
+/** 置換できるもの(テロップ・左上の見出し・概要欄)ごとの、文字の入れ物 */
+function replaceTargets(ctx) {
+  const out = [{ key: 'segs', label: 'テロップ', unit: '行', items: ctx.segs().map((s) => textField(s, 'text')) }];
+  const titles = ctx.titles?.();
+  if (titles) out.push({ key: 'titles', label: '左上の見出し', unit: '個', items: titles.map((t) => textField(t, 'text')) });
+  const d = CH.project === ctx.project ? CH.data : null;
+  if (d) {
+    out.push({
+      key: 'chapters', label: '概要欄', unit: 'か所',
+      items: [...d.topics.map((t, i) => textField(d.topics, i)), ...d.chapters.flatMap((c) => [textField(c, 'title'), textField(c, 'label')])],
+    });
+  }
+  return out;
+}
+
+/** 文の中の「誤」を、消した形と直した形で見せる */
+function showFix(text, wrong, right) {
+  const at = text.indexOf(wrong);
+  if (at < 0) return [h('del', {}, wrong), ' → ', h('ins', {}, right)];
+  return [text.slice(0, at), h('del', {}, wrong), h('ins', {}, right), text.slice(at + wrong.length)];
+}
+
+function afterFix(ctx, touchedChapters) {
+  if (touchedChapters && CH.data) {
+    chapterEdited();
+    renderChapters();
+  }
+  ctx.onChange();
+}
+
+function rememberFixes(pairs) {
+  return api('/api/fixes/add', { entries: pairs })
+    .then((r) => { FX.entries = r.entries; toast(`辞書に ${pairs.length} 個覚えました。次の文字起こしから自動で直します。`, 'ok'); })
+    .catch((e) => toast(e.message, 'bad'));
+}
+
+function doReplace(ctx) {
+  const find = RP.find;
+  if (!find) return toast('探す言葉を入れてください', 'warn');
+  if (find === RP.repl) return toast('探す言葉と置き換える言葉が同じです', 'warn');
+  const undo = [];
+  let touchedChapters = false;
+  for (const t of replaceTargets(ctx).filter((x) => RP.scope[x.key])) {
+    for (const f of t.items) {
+      const v = f.get();
+      if (!v.includes(find)) continue;
+      undo.push([f, v]);
+      f.set(v.split(find).join(RP.repl));
+      if (t.key === 'chapters') touchedChapters = true;
+    }
+  }
+  if (!undo.length) return toast('見つかりませんでした', 'warn');
+  RP.undo = { items: undo, chapters: touchedChapters, note: `「${find}」→「${RP.repl}」` };
+  if (RP.remember && RP.repl.trim()) rememberFixes([{ from: find, to: RP.repl }]);
+  afterFix(ctx, touchedChapters);
+  toast(`${undo.length} か所を置き換えました(「元に戻す」で戻せます)`, 'ok');
+}
+
+function undoReplace(ctx) {
+  const u = RP.undo;
+  if (!u) return;
+  for (const [f, v] of u.items) f.set(v);
+  RP.undo = null;
+  afterFix(ctx, u.chapters);
+  toast('置き換える前に戻しました');
+}
+
+function replaceBox(ctx) {
+  const found = h('div', { class: 'rp-found' });
+  const scopes = h('span', { class: 'row' });
+  const refresh = () => {
+    // 概要欄はあとから読み込まれるので、対象の選び方も毎回作り直す
+    scopes.replaceChildren(...replaceTargets(ctx).map((t) => h('label', { class: 'check' },
+      h('input', { type: 'checkbox', checked: RP.scope[t.key], onchange: (e) => { RP.scope[t.key] = e.target.checked; refresh(); } }), t.label)));
+    if (!RP.find) {
+      found.replaceChildren(h('span', { class: 'hint' }, '探す言葉を入れると、見つかった数と、直したあとの形を出します。'));
+      return;
+    }
+    const parts = [];
+    let samples = [];
+    for (const t of replaceTargets(ctx)) {
+      const hits = t.items.map((f) => f.get()).filter((v) => v.includes(RP.find));
+      if (hits.length) parts.push(`${t.label} ${hits.length} ${t.unit}${RP.scope[t.key] ? '' : '(対象外)'}`);
+      if (t.key === 'segs') samples = hits.slice(0, 4);
+    }
+    found.replaceChildren(
+      parts.length ? h('b', { class: 'small' }, '見つかった数: ' + parts.join('・')) : h('span', { class: 'muted small' }, '見つかりません'),
+      ...(samples.length ? [h('div', { class: 'rp-samples' }, samples.map((v) => h('div', {}, showFix(v, RP.find, RP.repl))))] : []));
+  };
+  const input = (k, placeholder) => h('input', {
+    value: RP[k], placeholder, 'aria-label': placeholder,
+    oninput: (e) => { RP[k] = e.target.value; refresh(); },
+    onfocus: refresh,
+    onkeydown: (e) => { if (e.key === 'Enter') { e.preventDefault(); doReplace(ctx); } },
+  });
+  refresh();
+  RP.refresh = refresh;          // 概要欄を読み込んだ・直したときにも数え直す(renderChapters から呼ぶ)
+  return h('div', { class: 'ft-block' },
+    h('b', {}, '一括置換'),
+    h('div', { class: 'rp-row' },
+      input('find', '探す言葉(例: ヨシミ)'), h('span', { class: 'muted' }, '→'), input('repl', '置き換える言葉(例: 吉見)'),
+      h('button', { class: 'primary', onclick: () => doReplace(ctx) }, 'すべて置き換える'),
+      RP.undo && h('button', { class: 'ghost', title: RP.undo.note, onclick: () => undoReplace(ctx) }, '元に戻す')),
+    h('div', { class: 'row rp-opts' },
+      h('span', { class: 'muted small' }, '対象'), scopes,
+      h('label', { class: 'check' },
+        h('input', { type: 'checkbox', checked: RP.remember, onchange: (e) => { RP.remember = e.target.checked; } }),
+        '辞書に覚える(次の文字起こしから自動で直す)')),
+    found);
+}
+
+/* AI に誤字の候補を出してもらう。行番号は画面の行の順(1から) */
+
+async function copyTypoPrompt(ctx) {
+  const { text } = await api('/api/typos/prompt', { lines: ctx.segs().map((s) => s.text) });
+  if (!(await copyText(text))) return showCopyBox('AI への依頼文(誤字の候補)', text);
+  const long = text.length > LONG_PROMPT
+    ? `\n\n※ 依頼文が長めです(約${Math.round(text.length / 1000)}千字)。無料版の ChatGPT などでは後半が読まれないことがあります。`
+      + 'そのときは、有料版や Claude(claude.ai、または「AI で探す」)をお使いください。'
+    : '';
+  const next = await ask('依頼文をコピーしました',
+    '1. ChatGPT や claude.ai を開いて、新しいチャットに貼り付けて送ります\n'
+    + '2. 返事が来たら、その文をまるごとコピーします\n'
+    + '3. ここに戻って「返事を貼り付け」を押すと、候補を1つずつ選べます' + long,
+    [{ label: 'ChatGPT を開く', value: 'chatgpt', primary: true },
+     { label: 'claude.ai を開く', value: 'claude' },
+     { label: '閉じる', value: null }]);
+  if (CHAT_SITES[next]) window.open(CHAT_SITES[next], '_blank', 'noopener');
+}
+
+function pasteTypoReply(ctx) {
+  const modal = $('modal');
+  const area = h('textarea', { rows: 12, placeholder: '12: 誤 → 正 ※理由\n48: 誤 → 正 ※理由', style: 'width:100%' });
+  const message = h('p', { class: 'bad-text small' });
+  const close = () => { modal.hidden = true; modal.replaceChildren(); };
+  const load = guard(async () => {
+    message.textContent = '';
+    try {
+      const r = await api('/api/typos/paste', { text: area.value, count: ctx.segs().length });
+      close();
+      showTypoCandidates(ctx, r.fixes);
+    } catch (e) {
+      message.textContent = e.message;
+    }
+  });
+  modal.replaceChildren(h('div', { class: 'mbox wide', role: 'dialog', 'aria-modal': 'true' },
+    h('h3', {}, 'AI の返事を貼り付け(誤字の候補)'),
+    h('p', { class: 'muted small' }, 'ChatGPT や claude.ai から返ってきた文を、そのまま貼り付けてください。「12: 誤 → 正」の形の行だけを読み取ります。'),
+    area, message,
+    h('div', { class: 'mbtns' },
+      h('button', { class: 'outline', onclick: close }, 'やめる'),
+      h('button', { class: 'primary', onclick: load }, '読み込む'))));
+  modal.hidden = false;
+  area.focus();
+  navigator.clipboard?.readText?.().then((clip) => {
+    if (!area.value && /\d+\s*[:：]\s*.+(→|->)/.test(clip || '') && !clip.includes('--- テロップ ---')) {
+      area.value = clip;
+      area.after(h('p', { class: 'hint pasted' }, 'コピーしてあった返事を入れました。よければ「読み込む」を押してください。'));
+    }
+  }).catch(() => {});
+}
+
+async function findTyposWithAi(ctx, button) {
+  button.disabled = true;
+  const old = button.textContent;
+  button.textContent = 'AI が探しています…(1分ほど)';
+  try {
+    const r = await api('/api/typos/ai', { lines: ctx.segs().map((s) => s.text) });
+    showTypoCandidates(ctx, r.fixes);
+  } finally {
+    button.disabled = false;
+    button.textContent = old;
+  }
+}
+
+/** 候補の行を探す(依頼文を作ったあとに行を足したり消したりしても、近くの行なら見つける) */
+function locateTypo(segs, f) {
+  const i = f.line - 1;
+  for (const d of [0, -1, 1, -2, 2, -3, 3, -4, 4, -5, 5]) {
+    if (segs[i + d]?.text.includes(f.wrong)) return i + d;
+  }
+  return -1;
+}
+
+function showTypoCandidates(ctx, found) {
+  if (!found.length) {
+    ask('誤字の候補はありませんでした', 'AI は直すところを見つけませんでした。', [{ label: '閉じる', value: null, primary: true }]);
+    return;
+  }
+  const segs = ctx.segs();
+  const rows = found.map((f) => {
+    const at = locateTypo(segs, f);
+    return { ...f, at, use: at >= 0 };
+  });
+  let remember = false;
+  const modal = $('modal');
+  const close = () => { modal.hidden = true; modal.replaceChildren(); };
+  const applyBtn = h('button', { class: 'primary' });
+  const count = () => { applyBtn.textContent = `チェックしたものを直す(${rows.filter((r) => r.use).length}個)`; };
+  const boxes = [];
+  const list = h('div', { class: 'typos' }, rows.map((r) => {
+    const box = h('input', { type: 'checkbox', checked: r.use, disabled: r.at < 0, onchange: (e) => { r.use = e.target.checked; count(); } });
+    boxes.push([box, r]);
+    return h('label', { class: 'typo' + (r.at < 0 ? ' missing' : '') },
+      box,
+      h('span', { class: 'mono small muted' }, `${r.at >= 0 ? r.at + 1 : r.line}行`),
+      h('span', { class: 'typo-text' },
+        r.at >= 0 ? showFix(segs[r.at].text, r.wrong, r.right) : showFix('', r.wrong, r.right),
+        r.at < 0 && h('span', { class: 'muted small' }, '(その行に見つかりません。もう直してあるかもしれません)'),
+        r.reason && h('span', { class: 'hint typo-why' }, r.reason)));
+  }));
+  const setAll = (on) => { for (const [box, r] of boxes) if (r.at >= 0) { r.use = box.checked = on; } count(); };
+  applyBtn.onclick = () => {
+    let n = 0;
+    const learned = [];
+    for (const r of rows.filter((x) => x.use)) {
+      const s = segs[r.at];
+      if (!s || !s.text.includes(r.wrong)) continue;
+      s.text = s.text.replace(r.wrong, r.right);
+      n += 1;
+      if (!learned.some((x) => x.from === r.wrong)) learned.push({ from: r.wrong, to: r.right });
+    }
+    close();
+    if (!n) return toast('直したものはありません');
+    if (remember && learned.length) rememberFixes(learned);
+    ctx.onChange();
+    toast(`${n} か所を直しました`, 'ok');
+  };
+  count();
+  modal.replaceChildren(h('div', { class: 'mbox wide', role: 'dialog', 'aria-modal': 'true' },
+    h('h3', {}, `誤字の候補(${rows.length}個)`),
+    h('p', { class: 'muted small' }, 'AI が見つけた候補です。直すものにチェックを付けて、下のボタンを押してください。チェックを外したものは直しません。'
+      + '赤い取り消し線が今の文字、緑が直したあとの文字です。'),
+    h('div', { class: 'row' },
+      h('button', { class: 'ghost small', onclick: () => setAll(true) }, 'すべて選ぶ'),
+      h('button', { class: 'ghost small', onclick: () => setAll(false) }, 'すべて外す')),
+    list,
+    h('label', { class: 'check', style: 'margin-left:0' },
+      h('input', { type: 'checkbox', onchange: (e) => { remember = e.target.checked; } }),
+      '直したものを辞書にも覚える(次の文字起こしから自動で直す)'),
+    h('div', { class: 'mbtns' }, h('button', { class: 'outline', onclick: close }, 'やめる'), applyBtn)));
+  modal.hidden = false;
+  applyBtn.focus();
+}
+
+function typoBox(ctx) {
+  const aiBtn = S.hasKey && h('button', { onclick: guard((e) => findTyposWithAi(ctx, e.currentTarget)) }, 'AI で探す(API)');
+  return h('div', { class: 'ft-block' },
+    h('b', {}, 'AI に誤字を探してもらう'),
+    h('div', { class: 'chapactions' },
+      h('button', { onclick: guard(() => copyTypoPrompt(ctx)) }, '1. 依頼文をコピー'),
+      h('button', { onclick: () => pasteTypoReply(ctx) }, '2. 返事を貼り付け'),
+      aiBtn),
+    h('p', { class: 'hint' }, 'テロップに行番号を付けて AI に渡し、聞き間違いや変換の誤りを「誤 → 正」で挙げてもらいます。'
+      + '候補は1つずつ、直すか直さないかを選べます。' + (S.hasKey ? '「AI で探す(API)」は、テロップの文字だけを Claude に送ります。' : '')));
+}
+
+/* 直し方の辞書。覚えた言い方は、次の文字起こしのあとで自動で直す */
+
+function dictBox(ctx) {
+  const body = h('div', { class: 'dict-body' });
+  const from = h('input', { placeholder: '誤(例: ヨシミ)', 'aria-label': '直す前の言い方' });
+  const to = h('input', { placeholder: '正(例: 吉見)', 'aria-label': '直したあとの言い方' });
+  const draw = () => {
+    const entries = FX.entries;
+    body.replaceChildren(
+      h('p', { class: 'hint' }, '覚えた言い方は、次からの文字起こしのあとで自動で直します(文字起こしにも、正しい言い方を出てきやすい言葉として伝えます)。'
+        + '一括置換や誤字の候補で「辞書に覚える」にチェックを付けても増えます。'),
+      entries == null ? h('div', { class: 'muted small' }, '読み込んでいます…')
+        : entries.length ? h('div', { class: 'dictlist' }, entries.map((e) => h('div', { class: 'dictrow' },
+            h('span', {}, e.from), h('span', { class: 'muted' }, '→'), h('b', {}, e.to),
+            h('button', {
+              class: 'ghost del', title: 'この言い方を忘れる',
+              onclick: guard(async () => { FX.entries = (await api('/api/fixes/remove', { from: e.from })).entries; draw(); }),
+            }, '×'))))
+          : h('div', { class: 'muted small' }, 'まだ何も覚えていません。'),
+      h('div', { class: 'rp-row' }, from, h('span', { class: 'muted' }, '→'), to,
+        h('button', {
+          onclick: guard(async () => {
+            FX.entries = (await api('/api/fixes/add', { entries: [{ from: from.value, to: to.value }] })).entries;
+            from.value = to.value = '';
+            draw();
+          }),
+        }, '覚える')),
+      entries?.length > 0 && h('div', { class: 'row' },
+        h('button', {
+          class: 'ghost', onclick: () => {
+            let n = 0;
+            const sorted = [...entries].sort((a, b) => b.from.length - a.from.length);
+            for (const s of ctx.segs()) {
+              for (const e of sorted) {
+                if (!s.text.includes(e.from)) continue;
+                n += s.text.split(e.from).length - 1;
+                s.text = s.text.split(e.from).join(e.to);
+              }
+            }
+            if (!n) return toast('辞書の言い方は、いまのテロップにありませんでした');
+            ctx.onChange();
+            toast(`辞書のとおりに ${n} か所を直しました`, 'ok');
+          },
+        }, 'いまのテロップに辞書を使う')));
+  };
+  const box = h('details', { class: 'adv dict' }, h('summary', {}, FX.entries ? `直し方の辞書(${FX.entries.length}個)` : '直し方の辞書'), body);
+  box.addEventListener('toggle', () => {
+    if (!box.open) return;
+    draw();
+    if (FX.entries == null) {
+      api('/api/fixes', {}).then((r) => { FX.entries = r.entries; draw(); }).catch((e) => toast(e.message, 'bad'));
+    }
+  });
+  return box;
+}
+
+/** テロップをまとめて直す欄(開け閉めは次に開いたときも覚えている) */
+function captionTools(ctx) {
+  const el = h('details', { class: 'adv fixtools', open: sectionOpen('fixtools', false) },
+    h('summary', {}, 'まとめて直す(一括置換・AI で誤字を探す・辞書)'),
+    h('div', { class: 'ft-body' }, replaceBox(ctx), typoBox(ctx), dictBox(ctx)));
+  el.addEventListener('toggle', () => rememberOpen('fixtools', el.open));
+  return el;
+}
+
+/* ---------- 焼き込む前のテロップの確認(文字起こしのあと止まっているとき) ---------- */
+
+const W = { project: '', segs: null, url: '', error: '', saveTimer: 0 };
+
+async function loadWaitSegs(name) {
+  W.project = name;
+  W.segs = null;
+  W.error = '';
+  try {
+    const p = await api('/api/project', { project: name });
+    const saved = p.draft?.wait_segs;
+    W.segs = (Array.isArray(saved) && saved.length ? saved : p.segments).map((s) => ({
+      start: +s.start, end: +s.end, text: String(s.text ?? ''), orig: typeof s.orig === 'string' ? s.orig : String(s.text ?? ''),
+    }));
+    W.url = p.work_url || '';
+  } catch (e) {
+    W.error = e.message;
+  }
+  if (W.project === name) renderWaitCaptions();
+}
+
+function saveWaitSoon() {
+  clearTimeout(W.saveTimer);
+  const name = W.project, segs = W.segs;
+  W.saveTimer = setTimeout(() => api('/api/draft', { project: name, draft: { wait_segs: segs } }).catch(() => {}), 1000);
+}
+
+/** 焼き込みに使うテロップ(直していなければ送らない) */
+function waitSegments(job) {
+  if (W.project !== job.project || !W.segs || !W.segs.some((s) => s.text.trim() !== s.orig)) return undefined;
+  return W.segs.map(({ start, end, text }) => ({ start, end, text: text.trim() }));
+}
+
+function waitCaptionsCard(job) {
+  const card = h('div', { id: 'waitCaps', style: 'display:grid;gap:12px' });
+  if (W.project !== job.project) loadWaitSegs(job.project);
+  setTimeout(renderWaitCaptions);
+  return section('waitcaps', 'テロップの確認', {
+    extra: h('span', { class: 'chip review', id: 'waitChanged', hidden: true }),
+  }, card);
+}
+
+function refreshWaitChanged() {
+  const chip = $('waitChanged');
+  if (!chip || !W.segs) return;
+  const n = W.segs.filter((s) => s.text.trim() !== s.orig).length;
+  chip.hidden = !n;
+  chip.textContent = `${n} 行を修正中`;
+}
+
+function renderWaitCaptions() {
+  const card = $('waitCaps');
+  if (!card) return;
+  if (!W.segs) {
+    card.replaceChildren(h('div', { class: 'empty' }, W.error || '読み込んでいます…'));
+    return;
+  }
+  const video = W.url ? h('video', {
+    id: 'waitVideo', controls: true, playsinline: true, disablePictureInPicture: true,
+    controlsList: 'nofullscreen nodownload noremoteplayback', preload: 'metadata', src: W.url,
+  }) : h('div', { class: 'empty' }, '動画を表示できません(文字は直せます)');
+  if (W.url) {
+    video.addEventListener('timeupdate', () => {
+      if (stopAt !== null && video.currentTime >= stopAt) { video.pause(); stopAt = null; }
+    });
+  }
+  const ctx = {
+    project: W.project,
+    segs: () => W.segs,
+    titles: () => null,
+    onChange: () => { saveWaitSoon(); renderWaitCaptions(); },
+  };
+  const rows = W.segs.map((s, i) => h('div', { class: 'line' },
+    h('div', { class: 'linetop' },
+      h('button', { class: 't', title: 'この箇所を再生', onclick: () => W.url && playIn(video, s.start, s.end) }, `▶ ${fmtTime(s.start)}〜${fmtTime(s.end)}`),
+      h('input', {
+        value: s.text, 'data-w': i, class: s.text.trim() !== s.orig ? 'changed' : '',
+        placeholder: '(空のままだとこのテロップは出ません)',
+        oninput: (e) => {
+          s.text = e.target.value;
+          e.target.classList.toggle('changed', s.text.trim() !== s.orig);
+          refreshWaitChanged();
+          saveWaitSoon();
+        },
+        onkeydown: (e) => {
+          if (e.key !== 'Enter') return;
+          e.preventDefault();
+          const next = card.querySelector(`input[data-w="${i + 1}"]`);
+          if (next) { next.focus(); next.scrollIntoView({ block: 'nearest' }); }
+        },
+      }))));
+  card.replaceChildren(
+    h('p', { class: 'muted small' }, '焼き込む前に、テロップの文字を確かめて直せます。時刻のボタンでその箇所を再生します。'
+      + '空にした行は出しません。Enterで次の行へ。直した内容は自動で保存し、続けるときに使います。'),
+    captionTools(ctx),
+    h('div', { class: 'fix' }, video, h('div', { class: 'lines' }, rows)));
+  refreshWaitChanged();
+}
+
 /* ---------- polling ---------- */
 
 let pollTimer = 0;
@@ -2039,6 +2507,7 @@ async function poll() {
   if (now === 'running') {
     const waitChanged = (st.job.wait || '') !== beforeWait;
     if (waitChanged && st.job.wait === 'titles' && S.step !== 'run') toast('文字起こしが終わりました。「3 処理」で見出しを決めてください。');
+    if (waitChanged && st.job.wait === 'captions' && S.step !== 'run') toast('文字起こしが終わりました。「3 処理」でテロップを確かめてください。');
     if (S.step === 'run' && before === 'running' && !waitChanged) updateProgress();
     else if (S.step === 'run') renderRun();
     else { renderHeader(); renderSteps(); }

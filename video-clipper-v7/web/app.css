@@ -661,3 +661,27 @@ details.section > .sec-body { display: grid; gap: 14px; margin-top: 14px; }
 .cap-logo.grab { pointer-events: auto; cursor: grab; touch-action: none; outline: 1px dashed rgba(255, 255, 255, .9); outline-offset: 2px; }
 .cap-logo.grab:active { cursor: grabbing; }
 .cap-logo-field .logo-panel .row { gap: 8px; }
+
+/* テロップをまとめて直す(一括置換・誤字の候補・辞書) */
+.fixtools .ft-body { display: grid; gap: 14px; margin-top: 12px; }
+.ft-block { display: grid; gap: 8px; }
+.rp-row { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr) auto auto; gap: 8px; align-items: center; }
+.rp-opts .check { margin-left: 0; }
+.rp-found { display: grid; gap: 4px; }
+.rp-samples { display: grid; gap: 2px; font-size: 13px; padding: 6px 10px; background: var(--panel-2); border-radius: 8px; }
+del { background: #fdecec; color: #8a1c1c; text-decoration: line-through; padding: 0 2px; border-radius: 3px; }
+ins { background: #e6f5ee; color: #14573c; text-decoration: none; font-weight: 700; padding: 0 2px; border-radius: 3px; }
+.typos { display: grid; gap: 4px; max-height: 52vh; overflow: auto; border: 1px solid var(--line); border-radius: 8px; padding: 6px; }
+.typo { display: grid; grid-template-columns: auto 52px minmax(0, 1fr); gap: 8px; align-items: start; padding: 6px; border-radius: 6px; cursor: pointer; }
+.typo:hover { background: var(--panel-2); }
+.typo.missing { opacity: .55; cursor: default; }
+.typo-text { line-height: 1.7; }
+.typo-why { display: block; }
+.dict .dict-body { display: grid; gap: 8px; margin-top: 10px; }
+.dictlist { display: grid; gap: 2px; max-height: 240px; overflow: auto; }
+.dictrow { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr) auto; gap: 8px; align-items: center; padding: 2px 4px; }
+.dict .rp-row { grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr) auto; }
+@media (max-width: 820px) {
+  .rp-row, .dict .rp-row { grid-template-columns: 1fr; }
+  .rp-row > .muted { display: none; }
+}
