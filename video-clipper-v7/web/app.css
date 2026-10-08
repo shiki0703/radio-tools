@@ -658,3 +658,6 @@ details.section > .sec-body { display: grid; gap: 14px; margin-top: 14px; }
   .rebuild-bar .rb-actions > b { display: none; }
   .rebuild-bar .rb-actions button.big { padding: 9px 14px; }
 }
+.cap-logo.grab { pointer-events: auto; cursor: grab; touch-action: none; outline: 1px dashed rgba(255, 255, 255, .9); outline-offset: 2px; }
+.cap-logo.grab:active { cursor: grabbing; }
+.cap-logo-field .logo-panel .row { gap: 8px; }
