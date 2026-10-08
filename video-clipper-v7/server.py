@@ -69,7 +69,7 @@ TYPES = {'.mp4': 'video/mp4', '.m4v': 'video/mp4', '.mov': 'video/mp4', '.webm':
          '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8'}
 CLIP_STYLE = dict(DEFAULT_STYLE, pos_y=0.78)
 DEFAULT_SETTINGS = {'do_transcribe': True, 'do_clip': True, 'accuracy': 'standard', 'hq': False, 'show_titles': False, 'check_captions': False, 'title_scope': 'corner', 'title_maker': 'ai', 'intro': '', 'outro': '',
-                    'logo': DEFAULT_LOGO, 'orientation': 'horizontal', 'clip_length': 30, 'style': {'main': DEFAULT_STYLE, 'clip': CLIP_STYLE}}
+                    'logo': DEFAULT_LOGO, 'logo_clip': DEFAULT_LOGO, 'orientation': 'horizontal', 'clip_length': 30, 'style': {'main': DEFAULT_STYLE, 'clip': CLIP_STYLE}}
 
 CGNAT = ipaddress.ip_network('100.64.0.0/10')    # 回線側 NAT の中(モバイル回線などで使われる)
 # 同じ Wi-Fi のスマホに開けるときの状態(ふだんは閉じている)
@@ -156,6 +156,8 @@ def load_settings():
     style = saved.get('style') or {}
     merged['style'] = {'main': normalize_style(style.get('main')), 'clip': normalize_style(style.get('clip'), base=CLIP_STYLE)}
     merged['logo'] = allow_logo(clean_logo(merged.get('logo')))
+    # 切り抜きのロゴを別に持つ前の設定では、元動画と同じロゴを使う
+    merged['logo_clip'] = allow_logo(clean_logo(saved.get('logo_clip', merged['logo'])))
     return merged
 
 
@@ -178,6 +180,7 @@ def clean_settings(raw):
         'intro': clean_clip_path(raw.get('intro')),
         'outro': clean_clip_path(raw.get('outro')),
         'logo': allow_logo(clean_logo(raw.get('logo'))),
+        'logo_clip': allow_logo(clean_logo(raw.get('logo_clip', raw.get('logo')))),
         'orientation': raw.get('orientation') if raw.get('orientation') in ('horizontal', 'vertical') else 'horizontal',
         'clip_length': max(5.0, min(120.0, length)),
         'style': {'main': normalize_style(style.get('main')), 'clip': normalize_style(style.get('clip'), base=CLIP_STYLE)},
@@ -202,9 +205,12 @@ def allow_logo(logo):
     return logo
 
 
-def logo_of(project):
-    """焼き込みに使うロゴ(重ねないときは None)"""
-    logo = clean_logo(project['settings'].get('logo'))
+def logo_of(project, kind='main'):
+    """焼き込みに使うロゴ(重ねないときは None)。kind は 'main'(元動画)/ 'clip'(切り抜き)。
+    切り抜きのロゴを別に持つ前の結果では、元動画と同じロゴを使う"""
+    settings = project['settings']
+    raw = settings.get('logo_clip', settings.get('logo')) if kind == 'clip' else settings.get('logo')
+    logo = clean_logo(raw)
     return logo if logo['on'] else None
 
 
@@ -579,7 +585,7 @@ def make_clips(project, segments, message):
               segments=segments if project['settings']['do_transcribe'] else None,
               style=project['style']['clip'], hq=project['settings']['hq'],
               titles=(project.get('titles') or []) if project['settings'].get('show_titles') else None,
-              logo=logo_of(project),
+              logo=logo_of(project, 'clip'),
               on_progress=lambda f: progress('切り抜き作成', f, f'{message}({round(f * 100)}%)'))
     project['clips'] = [f'clip_{i}.mp4' for i in range(1, len(project['highlights']) + 1)]
     save_project(project)
@@ -633,8 +639,9 @@ def start_reburn(body):
         for key_name in ('intro', 'outro'):
             if isinstance(body.get(key_name), str):
                 project['settings'] = {**project['settings'], key_name: clean_clip_path(body[key_name])}
-        if isinstance(body.get('logo'), dict):
-            project['settings'] = {**project['settings'], 'logo': clean_logo(body['logo'])}
+        for key_name in ('logo', 'logo_clip'):
+            if isinstance(body.get(key_name), dict):
+                project['settings'] = {**project['settings'], key_name: clean_logo(body[key_name])}
         if body.get('title_scope') in ('fine', 'corner', 'whole'):
             # 見出しの細かさを変えたときは作り直す(手で直した見出しは上書きされる)
             project['settings'] = {**project['settings'], 'title_scope': body['title_scope']}
@@ -897,8 +904,9 @@ def project_view(name):
         if (folder / f).is_file():
             files.append({'name': f, 'path': str(folder / f), 'size': (folder / f).stat().st_size,
                           'url': media_url(folder / f) + stamp})
-    allow_logo(clean_logo(project['settings'].get('logo')))
-    allow_logo(clean_logo((project.get('draft') or {}).get('logo')))     # 確認・修正で選び直したロゴ
+    for logo in (project['settings'].get('logo'), project['settings'].get('logo_clip'),
+                 (project.get('draft') or {}).get('logo'), (project.get('draft') or {}).get('logoClip')):
+        allow_logo(clean_logo(logo))     # 確認・修正で選び直したロゴも
     work = project.get('work_video') or ''
     if work and Path(work).is_file():
         ALLOWED.add(key(work))         # 焼き込む前の確認で、テロップの箇所を再生する
@@ -1024,16 +1032,86 @@ def pick_video(body):
     return {'info': inspect(os.path.normpath(path)) if path else None}
 
 
+# 「場所を表示」「結果フォルダを開く」で開いたエクスプローラーの窓。
+# 開いたら最前面に出し、画面(動画クリッパー)に戻ってきたら閉じる
+EXPLORERS = []
+
+
+def explorer_windows():
+    """いま開いているエクスプローラーの窓"""
+    user32 = ctypes.windll.user32
+    found = []
+
+    @ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)
+    def visit(hwnd, _):
+        name = ctypes.create_unicode_buffer(64)
+        user32.GetClassNameW(hwnd, name, 64)
+        if name.value == 'CabinetWClass' and user32.IsWindowVisible(hwnd):
+            found.append(hwnd)
+        return True
+
+    user32.EnumWindows(visit, 0)
+    return found
+
+
+def force_front(hwnd):
+    """窓を最前面に出す。Windows は裏で動くプログラムからの前面化を断るので、
+    いま前面にある窓の入力にいったんつないでから出す"""
+    user32, kernel32 = ctypes.windll.user32, ctypes.windll.kernel32
+    user32.GetForegroundWindow.restype = ctypes.c_void_p
+    front = user32.GetForegroundWindow()
+    theirs = user32.GetWindowThreadProcessId(ctypes.c_void_p(front), None) if front else 0
+    mine = kernel32.GetCurrentThreadId()
+    attached = bool(theirs and theirs != mine and user32.AttachThreadInput(mine, theirs, True))
+    try:
+        if user32.IsIconic(ctypes.c_void_p(hwnd)):
+            user32.ShowWindow(ctypes.c_void_p(hwnd), 9)          # SW_RESTORE
+        user32.BringWindowToTop(ctypes.c_void_p(hwnd))
+        user32.SetForegroundWindow(ctypes.c_void_p(hwnd))
+    finally:
+        if attached:
+            user32.AttachThreadInput(mine, theirs, False)
+
+
+def front_new_explorer(before):
+    """新しく開いたエクスプローラーの窓を待って、最前面に出す(出てこなければ何もしない)"""
+    for _ in range(50):
+        time.sleep(0.12)
+        new = [w for w in explorer_windows() if w not in before]
+        if new:
+            EXPLORERS.append(new[0])
+            time.sleep(0.15)            # 窓ができあがるのを少し待つ(早すぎると前に出ない)
+            force_front(new[0])
+            return
+
+
 def open_place(body):
-    """Open a result folder, or show a file in Explorer (only results and the chosen source videos)."""
+    """結果フォルダを開く・ファイルの場所を表示する(results の中と、選んだ元の動画だけ)。
+    エクスプローラーを最前面に出し、画面に戻ってきたら閉じる(explorer_done)"""
     target = Path(str(body.get('path') or ''))
     inside_results = key(target).startswith(key(RESULTS) + os.sep) or key(target) == key(RESULTS)
     if not target.exists() or not (inside_results or key(target) in ALLOWED):
         raise UserError('開けませんでした。ファイルが移動・削除されていないか確認してください。')
+    if os.name != 'nt':
+        subprocess.Popen(['open', '-R', str(target)] if target.is_file() else ['open', str(target)])
+        return {'ok': True}
+    explorer_done()
+    before = set(explorer_windows())
     if target.is_file():
         subprocess.Popen(['explorer', '/select,', str(target)])
     else:
-        os.startfile(str(target))
+        subprocess.Popen(['explorer', str(target)])
+    threading.Thread(target=front_new_explorer, args=(before,), daemon=True).start()
+    return {'ok': True}
+
+
+def explorer_done(body=None):
+    """開いたエクスプローラーの窓を閉じる(画面に戻ってきたとき)"""
+    if os.name == 'nt':
+        for hwnd in EXPLORERS:
+            if ctypes.windll.user32.IsWindow(ctypes.c_void_p(hwnd)):
+                ctypes.windll.user32.PostMessageW(ctypes.c_void_p(hwnd), 0x0010, 0, 0)    # WM_CLOSE
+    EXPLORERS.clear()
     return {'ok': True}
 
 
@@ -1142,6 +1220,7 @@ POST = {
     '/api/project': lambda b: project_view(b.get('project')),
     '/api/draft': save_draft,
     '/api/open': open_place,
+    '/api/explorer-done': explorer_done,
     '/api/request-open': request_open,
     '/api/settings': lambda b: save_json(clean_settings(b.get('settings')), SETTINGS) or {'ok': True},
     '/api/chapters': chapters_get,

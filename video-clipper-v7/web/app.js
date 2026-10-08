@@ -300,7 +300,7 @@ function sourceCard(v) {
       !v.has_audio && h('div', { class: 'notice bad' }, '音声が入っていない動画です。文字起こしや盛り上がり検出はできません。'),
       h('div', { class: 'row' },
         h('button', { onclick: guard(pickVideo) }, '別の動画を選ぶ'),
-        h('button', { class: 'ghost', onclick: guard(() => api('/api/open', { path: v.path })) }, '場所を表示'))));
+        h('button', { class: 'ghost', onclick: guard(() => showPlace(v.path)) }, '場所を表示'))));
 }
 
 function recentList() {
@@ -363,23 +363,40 @@ function roundOutline(rx, ry, color) {
   return out.join(',');
 }
 
-// 見出しは Alignment=7(左上)・BorderStyle=3(半透明の黒帯)で焼き込まれる。src/subtitle.py と同じ計算。
-const TITLE_RATIO = 0.62, TITLE_MIN = 11, TITLE_MAX = 20, TITLE_MARGIN = 10, TITLE_PAD = 3;
+// 見出しは BorderStyle=3(帯)で、t_pos の場所に焼き込まれる。src/subtitle.py の build_title_style と同じ計算。
+const TITLE_PAD = 3;
+const TITLE_DEFAULT = { t_font: 'gothic', t_size: 11, t_color: '#FFFFFF', t_bold: false, t_bg: '#000000', t_bg_opacity: 0.75, t_pos: 'tl', t_mx: 10, t_my: 10 };
+const TITLE_SPOTS = [['tl', '左上'], ['tc', '中央上'], ['tr', '右上'], ['bl', '左下'], ['br', '右下']];
+
+/** 見出しを別に設定できるようになる前の設定には、これまでと同じ見た目を補う(src/subtitle.py と同じ) */
+function withTitleStyle(c) {
+  if ('t_size' in c) return c;
+  return Object.assign(c, TITLE_DEFAULT, { t_font: c.font, t_size: Math.round(Math.min(c.size, Math.max(11, Math.min(c.size * 0.62, 20))) * 10) / 10 });
+}
 
 function applyTitleCss(el, c, box) {
   const height = box.clientHeight;
   if (!height) return;
   const scale = height / PLAY_Y, sx = box.clientWidth / PLAY_X;
-  const line = Math.min(c.size, Math.max(TITLE_MIN, Math.min(c.size * TITLE_RATIO, TITLE_MAX))) * scale;
+  const line = c.t_size * scale;
   const padX = TITLE_PAD * sx, padY = TITLE_PAD * scale;
   const s = el.style;
-  s.fontFamily = PREV_FONT[c.font] || PREV_FONT.gothic;
-  s.fontSize = (line * (FONT_EM[c.font] || FONT_EM.gothic)).toFixed(2) + 'px';
+  s.fontFamily = PREV_FONT[c.t_font] || PREV_FONT.gothic;
+  s.fontSize = (line * (FONT_EM[c.t_font] || FONT_EM.gothic)).toFixed(2) + 'px';
   s.lineHeight = line.toFixed(2) + 'px';
   s.padding = `${padY.toFixed(2)}px ${padX.toFixed(2)}px`;
-  // 焼き込みでは背景の帯が余白の外側に広がるので、その分だけ左上へ寄せる
-  s.left = (TITLE_MARGIN * sx - padX).toFixed(2) + 'px';
-  s.top = (TITLE_MARGIN * scale - padY).toFixed(2) + 'px';
+  s.color = c.t_color;
+  s.fontWeight = c.t_bold ? 700 : 400;
+  s.background = hexToRgba(c.t_bg, Math.round(c.t_bg_opacity * 255) / 255);
+  // 焼き込みでは帯が余白の外側に広がるので、その分だけ端へ寄せる
+  const x = (Math.round(c.t_mx) * sx - padX).toFixed(2) + 'px';
+  const y = (Math.round(c.t_my) * scale - padY).toFixed(2) + 'px';
+  const pos = c.t_pos || 'tl';
+  s.left = pos === 'tc' ? '50%' : pos.endsWith('l') ? x : 'auto';
+  s.right = pos.endsWith('r') ? x : 'auto';
+  s.top = pos.startsWith('t') ? y : 'auto';
+  s.bottom = pos.startsWith('b') ? y : 'auto';
+  s.transform = pos === 'tc' ? 'translateX(-50%)' : 'none';
 }
 
 function captionMargins(c) {
@@ -453,13 +470,19 @@ function thumbRatio(url, onLoad) {
   return THUMB_RATIO[url];
 }
 
+// 見た目の欄で選んでいる動画('main' 元動画 / 'clip' 切り抜き)
+const CAP_TARGET = { now: 'main' };
+
 /**
  * The caption look editor. Built once and updated in place, so sliders and dragging keep working.
  * opts: styles() -> {main, clip}, hasClip(), vertical(), thumb(), sample(), onChange()
+ *       titleOn() / setTitleOn(on) … 話題の見出しを出すか(渡すと見出しの設定も出す)、titleSample() … 見出しの例
+ *       logo(target) / saveLogo(target, logo) … 元動画('main')・切り抜き('clip')それぞれのロゴ
+ * テロップ・見出し・ロゴは、元動画と切り抜き動画で別々に持つ。
  */
 function captionEditor(opts) {
-  let target = 'main';
-  const cur = () => opts.styles()[target];
+  let target = CAP_TARGET.now;      // 描き直しても、選んでいた動画(元動画・切り抜き)のまま
+  const cur = () => withTitleStyle(opts.styles()[target]);
   const changed = (custom) => {
     if (custom) cur().preset = 'custom';
     update();
@@ -467,8 +490,36 @@ function captionEditor(opts) {
   };
 
   const tabs = h('div', { class: 'switch' },
-    h('button', { 'data-t': 'main', onclick: () => setTarget('main') }, '元動画'),
+    h('button', { 'data-t': 'main', onclick: () => setTarget('main') }, '元動画(本編)'),
     h('button', { 'data-t': 'clip', onclick: () => setTarget('clip') }, '切り抜き動画'));
+  // 話題の見出し
+  const tOn = h('input', { type: 'checkbox', onchange: (e) => { opts.setTitleOn?.(e.target.checked); update(); opts.onChange?.(); } });
+  const tFont = h('select', { onchange: (e) => { cur().t_font = e.target.value; changed(); } },
+    S.fonts.map((f) => h('option', { value: f.value }, f.label)));
+  const setTSize = (v) => { cur().t_size = Math.max(6, Math.min(40, Math.round(+v * 2) / 2 || 11)); changed(); };
+  const tSize = h('input', { type: 'range', min: 6, max: 30, step: 0.5, oninput: (e) => setTSize(e.target.value) });
+  const tSizeNum = h('input', { type: 'number', min: 6, max: 40, step: 0.5, onchange: (e) => setTSize(e.target.value) });
+  const tSpots = h('div', { class: 'switch tspots', style: 'grid-template-columns:repeat(5, 1fr)' }, TITLE_SPOTS.map(([k, label]) =>
+    h('button', { 'data-p': k, onclick: () => { cur().t_pos = k; changed(); } }, label)));
+  const tColor = h('input', { type: 'color', oninput: (e) => { cur().t_color = e.target.value.toUpperCase(); changed(); } });
+  const tBg = h('input', { type: 'color', oninput: (e) => { cur().t_bg = e.target.value.toUpperCase(); changed(); } });
+  const tOpacity = h('input', { type: 'range', min: 0, max: 1, step: 0.05, oninput: (e) => { cur().t_bg_opacity = +e.target.value; changed(); } });
+  const tOpacityVal = h('span', { class: 'mono' });
+  const tBold = h('input', { type: 'checkbox', onchange: (e) => { cur().t_bold = e.target.checked; changed(); } });
+  const tBody = h('div', { class: 'tbody' },
+    h('div', { class: 'two' },
+      h('div', { class: 'field' }, h('label', {}, '見出しのフォント'), tFont),
+      h('div', { class: 'field' }, h('label', {}, '見出しの文字サイズ'), h('div', { class: 'sizerow' }, tSize, tSizeNum))),
+    h('div', { class: 'field' }, h('label', {}, '見出しの場所'), tSpots),
+    h('div', { class: 'adv-grid' },
+      h('label', {}, '文字色', tColor),
+      h('label', {}, '帯の色', tBg),
+      h('label', {}, h('span', {}, '帯の濃さ ', tOpacityVal), tOpacity),
+      h('label', { style: 'display:flex;gap:6px;align-items:center' }, tBold, '太字にする')));
+  const titleField = opts.setTitleOn ? h('div', { class: 'field title-field' },
+    h('label', { class: 'check tcheck' }, tOn, h('b', {}, '話題の見出しを出す'),
+      h('span', { class: 'muted small' }, '(いま何の話かを短い言葉で表示します)')),
+    tBody) : null;
   const font = h('select', { onchange: (e) => { cur().font = e.target.value; changed(); } },
     S.fonts.map((f) => h('option', { value: f.value }, f.label)));
   const setSize = (v) => { cur().size = Math.max(10, Math.min(48, Math.round(+v) || 18)); changed(); };
@@ -499,7 +550,7 @@ function captionEditor(opts) {
   const preview = h('div', { class: 'cap-preview' }, logoImg, tag, title, text);
   // ロゴ(元動画・切り抜き共通)。このプレビューの上で動かす
   const logoCtl = opts.saveLogo ? logoPanel({
-    get: opts.logo, save: opts.saveLogo, thumb: opts.thumb, img: logoImg, stage: preview,
+    get: () => opts.logo(target), save: (logo) => opts.saveLogo(target, logo), thumb: opts.thumb, img: logoImg, stage: preview,
     canDrag: () => !(target === 'clip' && opts.vertical()), onChange: () => update(), note: opts.logoNote,
   }) : null;
 
@@ -527,16 +578,41 @@ function captionEditor(opts) {
     text.addEventListener('pointerup', up);
   });
 
+  // 見出しをドラッグして、端からの余白を変える(角は「見出しの場所」で選ぶ)
+  title.addEventListener('pointerdown', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    try { title.setPointerCapture(e.pointerId); } catch { /* 外れてもドラッグは続く */ }
+    const c = cur();
+    const start = { x: e.clientX, y: e.clientY, mx: c.t_mx, my: c.t_my };
+    const move = (ev) => {
+      const r = preview.getBoundingClientRect();
+      const dx = (ev.clientX - start.x) / r.width * PLAY_X, dy = (ev.clientY - start.y) / r.height * PLAY_Y;
+      const spot = c.t_pos || 'tl';
+      if (spot !== 'tc') c.t_mx = Math.round(clampTo(start.mx + (spot.endsWith('r') ? -dx : dx), 0, 180));
+      c.t_my = Math.round(clampTo(start.my + (spot.startsWith('b') ? -dy : dy), 0, 140));
+      update();
+    };
+    const up = () => {
+      title.removeEventListener('pointermove', move);
+      title.removeEventListener('pointerup', up);
+      opts.onChange?.();
+    };
+    title.addEventListener('pointermove', move);
+    title.addEventListener('pointerup', up);
+  });
+
   const el = h('div', { class: 'captioner' },
     h('div', { class: 'controls' },
-      h('div', { class: 'field', 'data-role': 'tabs' }, h('label', {}, '編集するテロップ'), tabs),
+      h('div', { class: 'field', 'data-role': 'tabs' }, h('label', {}, '設定する動画'), tabs,
+        h('p', { class: 'hint' }, 'テロップ・見出し・ロゴは、元動画と切り抜き動画で別々に設定できます。')),
+      h('b', { class: 'sub-head' }, 'テロップ'),
       h('div', { class: 'two' },
         h('div', { class: 'field' }, h('label', {}, 'フォント'), font),
         h('div', { class: 'field' }, h('label', {}, '文字サイズ'), h('div', { class: 'sizerow' }, size, sizeNum))),
       h('div', { class: 'two' },
         h('div', { class: 'field' }, h('label', {}, 'スタイル'), presets),
         h('div', { class: 'field' }, h('label', {}, '位置'), pos)),
-      logoCtl && h('div', { class: 'field cap-logo-field' }, h('label', {}, 'ロゴ(元動画・切り抜き共通)'), logoCtl.el),
       h('details', { class: 'adv' },
         h('summary', {}, '色・縁取り・影を細かく調整'),
         h('div', { class: 'adv-grid' },
@@ -544,12 +620,16 @@ function captionEditor(opts) {
           h('label', {}, '縁取り色(ボックスでは背景色)', ocolor),
           h('label', {}, h('span', {}, '縁取りの太さ ', outlineVal), outline),
           h('label', {}, h('span', {}, '影の強さ ', shadowVal), shadow),
-          h('label', { style: 'display:flex;gap:6px;align-items:center' }, bold, '太字にする')))),
-    h('div', { style: 'display:grid;gap:6px' }, preview, h('p', { class: 'hint' }, 'テロップをドラッグして位置を調整できます(中央に吸着します)。'
-      + (logoCtl ? 'ロゴもドラッグで動かせます。' : ''))));
+          h('label', { style: 'display:flex;gap:6px;align-items:center' }, bold, '太字にする'))),
+      titleField && h('b', { class: 'sub-head' }, '話題の見出し'),
+      titleField,
+      logoCtl && h('b', { class: 'sub-head' }, 'ロゴ'),
+      logoCtl && h('div', { class: 'field cap-logo-field' }, logoCtl.el)),
+    h('div', { class: 'cap-side' }, preview, h('p', { class: 'hint' }, 'テロップ'
+      + (titleField ? '・見出し' : '') + (logoCtl ? '・ロゴ' : '') + 'は、プレビューの上でドラッグして動かせます(テロップは中央に吸着します)。')));
 
   function setTarget(t) {
-    target = t;
+    target = CAP_TARGET.now = t;
     update();
   }
 
@@ -573,6 +653,18 @@ function captionEditor(opts) {
     for (const b of pos.querySelectorAll('button')) {
       b.classList.toggle('on', Math.abs(+b.dataset.x - c.pos_x) < 0.03 && Math.abs(+b.dataset.y - c.pos_y) < 0.03);
     }
+    const titleOn = !!opts.titleOn?.();
+    tOn.checked = titleOn;
+    tBody.hidden = !titleOn;
+    tFont.value = c.t_font;
+    tSize.value = c.t_size;
+    tSizeNum.value = c.t_size;
+    tColor.value = c.t_color;
+    tBg.value = c.t_bg;
+    tOpacity.value = c.t_bg_opacity;
+    tOpacityVal.textContent = `${Math.round(c.t_bg_opacity * 100)}%`;
+    tBold.checked = c.t_bold;
+    for (const b of tSpots.querySelectorAll('button')) b.classList.toggle('on', b.dataset.p === c.t_pos);
     const vertical = target === 'clip' && opts.vertical();
     const thumb = opts.thumb();
     // Same shape as the finished video: 9:16 for vertical clips, otherwise the source's own ratio.
@@ -580,7 +672,7 @@ function captionEditor(opts) {
     preview.classList.toggle('vert', ratio < 1);
     preview.style.aspectRatio = vertical ? '' : String(ratio);
     preview.style.backgroundImage = thumb ? `url("${thumb}")` : '';
-    const logo = opts.logo?.();
+    const logo = opts.logo?.(target);
     const showLogo = !!(logo && logo.on && logo.path);
     logoImg.hidden = !showLogo;
     if (showLogo) {
@@ -599,12 +691,12 @@ function captionEditor(opts) {
     logoImg.classList.toggle('grab', showLogo && !!logoCtl && !vertical);
     logoCtl?.update();
     // keep the label off a caption (or a logo) near the top
-    tag.classList.toggle('low', c.pos_y < 0.4 || (showLogo && logo.y < 0.4));
     tag.textContent = target === 'main' ? '元動画のイメージ' : vertical ? '切り抜き(縦 9:16)のイメージ' : '切り抜き(元動画と同じ比率)のイメージ';
     text.textContent = opts.sample() || 'こんな感じのテロップになります';
-    const heading = opts.titleSample?.() || '';
+    const heading = opts.titleOn?.() ? (opts.titleSample?.() || '見出しの例') : '';
     title.textContent = heading;
     title.hidden = !heading;
+    tag.classList.toggle('low', c.pos_y < 0.4 || (showLogo && logo.y < 0.4) || (!!heading && (c.t_pos || 'tl').startsWith('t')));
     requestAnimationFrame(() => {
       applyCaptionCss(text, c, preview);
       if (heading) applyTitleCss(title, c, preview);
@@ -802,20 +894,24 @@ function renderSettings() {
   const setOption = (k, v) => { st[k] = v; saveSettingsSoon(); renderSettings(); };
   const task = (k, title, desc) => h('button', { class: 'task' + (st[k] ? ' on' : ''), onclick: () => setOption(k, !st[k]) },
     h('b', {}, title), h('span', {}, desc));
+  const logoKey = (t) => (t === 'clip' ? 'logo_clip' : 'logo');
   settingsEditor = st.do_transcribe ? captionEditor({
     styles: () => st.style,
     hasClip: () => st.do_clip,
     vertical: () => st.orientation === 'vertical',
-    titleSample: () => (st.show_titles && st.do_transcribe ? '見出しの例' : ''),
+    titleOn: () => st.show_titles,
+    setTitleOn: (on) => { st.show_titles = on; saveSettingsSoon(); renderSettings(); },
+    titleSample: () => '',
     thumb: () => S.thumb,
     sample: () => '',
-    logo: () => st.logo,
-    saveLogo: (logo) => { st.logo = logo; saveSettingsSoon(); },
+    logo: (t) => st[logoKey(t)] || st.logo,
+    saveLogo: (t, logo) => { st[logoKey(t)] = logo; saveSettingsSoon(); },
     onChange: saveSettingsSoon,
   }) : null;
+  // テロップを作らないときのロゴは、元動画・切り抜きで同じものを使う
   settingsLogo = settingsEditor ? null : logoPanel({
     get: () => st.logo,
-    save: (logo) => { st.logo = logo; saveSettingsSoon(); },
+    save: (logo) => { st.logo = logo; st.logo_clip = logo; saveSettingsSoon(); },
     thumb: () => S.thumb,
     onChange: () => settingsEditor?.update(),
   });
@@ -831,9 +927,8 @@ function renderSettings() {
         task('do_transcribe', '文字起こし + テロップ', '音声を自動で文字起こしして、テロップを動画に焼き込みます。完成後に文字や見た目を直せます。'),
         task('do_clip', '切り抜き作成', '盛り上がった場面を上位5か所、根拠つきで選んで切り抜きます。'))),
     settingsEditor && h('div', { class: 'card', style: 'display:grid;gap:12px' },
-      h('h3', {}, 'テロップとロゴ'),
-      h('p', { class: 'muted small' }, (st.do_clip ? 'テロップは、元動画と切り抜き動画で別々に設定できます。' : '')
-        + 'ロゴは一度選ぶと、次の動画でもそのまま使います(あとから「確認・修正」でも変えられます)。'),
+      h('h3', {}, 'テロップ・見出し・ロゴ'),
+      h('p', { class: 'muted small' }, '設定は次の動画でもそのまま使います(あとから「確認・修正」でも変えられます)。'),
       settingsEditor.el),
     settingsLogo && h('div', { class: 'card', style: 'display:grid;gap:12px' },
       h('h3', {}, 'ロゴ'),
@@ -860,8 +955,6 @@ function renderSettings() {
       h('h3', {}, '仕上がり'),
       h('div', { class: 'tasks' },
         task('hq', '画質優先モード', '元動画の解像度を保ち、より高画質に出力します。時間がかかり、ファイルも大きくなります。'),
-        st.do_transcribe && task('show_titles', '話題の見出しを左上に出す',
-          '「いま何の話か」を短い言葉で画面の左上に表示します(元動画・切り抜きの両方)。自動で作るので、あとから直せます。'),
         st.do_transcribe && task('check_captions', '焼き込む前にテロップを確かめる',
           '文字起こしのあと一度止まり、テロップの文字を直してから焼き込みます(一括置換や、AI に誤字を探してもらうこともできます)。作り直しが要りません。')),
       h('div', { class: 'field' },
@@ -1068,6 +1161,7 @@ let activeLine = 0;
 
 async function openProject(name) {
   const project = await api('/api/project', { project: name });
+  for (const k of ['main', 'clip']) if (project.style?.[k]) withTitleStyle(project.style[k]);   // 見出しを別に持つ前の結果
   S.project = project;
   const draft = project.draft || {};
   // A draft keeps whole lines (text and timing); drafts from older versions kept only the texts.
@@ -1086,6 +1180,8 @@ async function openProject(name) {
     shift: typeof draft.shift === 'number' ? draft.shift : 0,
     style: JSON.parse(JSON.stringify(draft.style || project.style)),
     logo: { ...LOGO_DEFAULT, ...(draft.logo || project.settings.logo || {}) },
+    // 切り抜きのロゴを別に持つ前の結果では、元動画と同じロゴ
+    logoClip: { ...LOGO_DEFAULT, ...(draft.logoClip || project.settings.logo_clip || project.settings.logo || {}) },
     intro: typeof draft.intro === 'string' ? draft.intro : project.settings.intro || '',
     outro: typeof draft.outro === 'string' ? draft.outro : project.settings.outro || '',
     main: true,
@@ -1107,7 +1203,7 @@ function saveDraftSoon() {
   clearTimeout(draftTimer);
   refreshRebuildBar();
   const name = S.project.name;
-  draftTimer = setTimeout(() => api('/api/draft', { project: name, draft: { segs: S.edit.segs, titles: S.edit.titles, showTitles: S.edit.showTitles, shift: S.edit.shift, style: S.edit.style, logo: S.edit.logo, intro: S.edit.intro, outro: S.edit.outro } }).catch(() => {}), 1000);
+  draftTimer = setTimeout(() => api('/api/draft', { project: name, draft: { segs: S.edit.segs, titles: S.edit.titles, showTitles: S.edit.showTitles, shift: S.edit.shift, style: S.edit.style, logo: S.edit.logo, logoClip: S.edit.logoClip, intro: S.edit.intro, outro: S.edit.outro } }).catch(() => {}), 1000);
 }
 
 function detachVideos() {
@@ -1274,15 +1370,16 @@ function renderReview() {
     styles: () => S.edit.style,
     hasClip: () => clips.length > 0,
     vertical: () => p.settings.orientation === 'vertical',
+    titleOn: () => S.edit.showTitles,
+    setTitleOn: p.settings.do_transcribe ? (on) => { S.edit.showTitles = on; saveDraftSoon(); renderReview(); } : null,
     titleSample: () => {
-      if (!S.edit.showTitles) return '';
       const at = S.edit.segs[activeLine]?.start ?? 0;
       return S.edit.titles.find((t) => t.start <= at && at < t.end)?.text || '';
     },
     thumb: () => S.projectThumb,
     sample: () => S.edit.segs[activeLine]?.text || '',
-    logo: () => S.edit.logo,
-    saveLogo: (logo) => { S.edit.logo = logo; saveDraftSoon(); },
+    logo: (t) => (t === 'clip' ? S.edit.logoClip : S.edit.logo),
+    saveLogo: (t, logo) => { if (t === 'clip') S.edit.logoClip = logo; else S.edit.logo = logo; saveDraftSoon(); },
     logoNote: ' 変えたら、下の「この内容で作り直す」で動画に入ります。',
     onChange: saveDraftSoon,
   }) : null;
@@ -1341,7 +1438,7 @@ function renderReview() {
         h('h1', {}, '確認・修正'),
         h('p', { class: 'muted' }, `${basename(p.source)} ・ ${fmtDate(p.created)} ・ ${summary}`)),
       h('div', { class: 'row' },
-        h('button', { onclick: guard(() => api('/api/open', { path: p.folder })) }, '結果フォルダを開く'))),
+        h('button', { onclick: guard(() => showPlace(p.folder)) }, '結果フォルダを開く'))),
     p.status !== 'done' && h('div', { class: 'notice warn' },
       p.status === 'running' ? 'この処理はまだ実行中です。「3 処理」で進み具合を確認できます。'
         : `この処理は${STATUS_LABEL[p.status] || '途中で終了'}しています。できた所までの動画を確認できます。`),
@@ -1358,7 +1455,7 @@ function renderReview() {
       h('div', { class: 'fix' }, video, lines),
       timing,
       h('details', { class: 'adv', open: false },
-        h('summary', {}, logoOn ? `テロップとロゴの見た目を変える(ロゴ: ${basename(S.edit.logo.path)})` : 'テロップとロゴの見た目を変える'),
+        h('summary', {}, logoOn ? `テロップ・見出し・ロゴの見た目を変える(ロゴ: ${basename(S.edit.logo.path)})` : 'テロップ・見出し・ロゴの見た目を変える'),
         h('div', { style: 'margin-top:12px' }, reviewEditor.el))),
     p.has_captioned && p.settings.do_transcribe && section('titles', '話題の見出し(画面の左上)', {
       open: false,
@@ -1409,13 +1506,13 @@ function renderReview() {
               ? h('div', { class: 'lines' }, inClip.map(({ j }) => lineRow(j, playClip,
                   (s) => `${fmtTime(Math.max(0, s.start + shift - from))}〜${fmtTime(Math.max(0, s.end + shift - from))}`)))
               : h('div', { class: 'empty' }, 'この範囲にテロップはありません')),
-          h('div', { class: 'row' }, h('button', { class: 'ghost', onclick: guard(() => api('/api/open', { path: `${p.folder}\\${c.name}` })) }, '場所を表示')));
+          h('div', { class: 'row' }, h('button', { class: 'ghost', onclick: guard(() => showPlace(`${p.folder}\\${c.name}`)) }, '場所を表示')));
       }))),
     section('files', 'できたファイル', { open: false, extra: h('span', { class: 'muted small' }, `${p.files.length} 個`) },
       p.files.length
         ? h('ul', { class: 'filelist' }, p.files.map((f) => h('li', {},
             h('span', {}, h('b', {}, f.name), ' ', h('span', { class: 'muted small' }, fmtSize(f.size))),
-            h('button', { class: 'ghost', onclick: guard(() => api('/api/open', { path: f.path })) }, '場所を表示'))))
+            h('button', { class: 'ghost', onclick: guard(() => showPlace(f.path)) }, '場所を表示'))))
         : h('div', { class: 'empty' }, 'まだファイルはありません'),
       h('p', { class: 'muted small' }, `保存場所: ${p.folder}`)),
     p.has_captioned && h('div', { class: 'rebuild-bar', id: 'rebuildBar' })));
@@ -1463,7 +1560,8 @@ function logoChanged(p) {
     const x = { ...LOGO_DEFAULT, ...(l || {}) };
     return x.on && x.path ? JSON.stringify([x.path, x.x, x.y, x.w]) : 'off';
   };
-  return sig(S.edit.logo) !== sig(p.settings.logo);
+  return sig(S.edit.logo) !== sig(p.settings.logo)
+    || sig(S.edit.logoClip) !== sig(p.settings.logo_clip || p.settings.logo);
 }
 
 /** まだ動画に入っていない変更(作り直すと入る) */
@@ -2037,7 +2135,7 @@ async function startReburn() {
   detachVideos();  // the files being rewritten must not be held open by the players
   await api('/api/reburn', {
     project: p.name, segments, style: S.edit.style, targets,
-    titles: S.edit.titles.filter((t) => t.text.trim()), show_titles: S.edit.showTitles, logo: S.edit.logo,
+    titles: S.edit.titles.filter((t) => t.text.trim()), show_titles: S.edit.showTitles, logo: S.edit.logo, logo_clip: S.edit.logoClip,
     intro: S.edit.intro || '', outro: S.edit.outro || '',
   });
   S.job = { state: 'running', kind: 'reburn', project: p.name, steps: [], step: -1, percent: 0, message: '準備しています…' };
@@ -2530,6 +2628,20 @@ async function poll() {
 
 /* ---------- boot ---------- */
 
+/** 「場所を表示」「結果フォルダを開く」。エクスプローラーを最前面に出し、この画面に戻ってきたら閉じる */
+let explorerOpen = false;
+
+async function showPlace(path) {
+  await api('/api/open', { path });
+  explorerOpen = true;
+}
+
+window.addEventListener('focus', () => {
+  if (!explorerOpen) return;
+  explorerOpen = false;
+  api('/api/explorer-done', {}).catch(() => {});
+});
+
 function wire() {
   for (const b of $('steps').querySelectorAll('button')) b.onclick = () => setStep(b.dataset.step);
   $('btnPhone').onclick = guard(openPhoneDoor);
@@ -2544,7 +2656,7 @@ function wire() {
     S.thumb = '';
     setStep('video');
   };
-  $('btnResults').onclick = guard(() => api('/api/open', { path: S.results }));
+  $('btnResults').onclick = guard(() => showPlace(S.results));
   window.addEventListener('resize', () => { settingsEditor?.update(); reviewEditor?.update(); settingsLogo?.update(); });
   window.addEventListener('pagehide', () => navigator.sendBeacon(`/api/bye?t=${encodeURIComponent(TOKEN)}`));
 }

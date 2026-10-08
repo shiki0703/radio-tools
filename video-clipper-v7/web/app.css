@@ -685,3 +685,16 @@ ins { background: #e6f5ee; color: #14573c; text-decoration: none; font-weight: 7
   .rp-row, .dict .rp-row { grid-template-columns: 1fr; }
   .rp-row > .muted { display: none; }
 }
+
+/* テロップ・見出し・ロゴの見た目(プレビューは1つ。設定を見ている間もプレビューが見えるように) */
+.captioner .sub-head { font-size: 13px; padding-top: 10px; border-top: 1px solid var(--line); }
+.captioner .controls > .sub-head:first-of-type { border-top: 0; padding-top: 0; }
+.cap-side { display: grid; gap: 6px; position: sticky; top: 76px; }
+.title-field { display: grid; gap: 10px; }
+.title-field .tbody { display: grid; gap: 12px; }
+.field > label.tcheck { margin-left: 0; color: var(--text); justify-content: flex-start; font-size: 13px; }
+.tcheck .muted { font-weight: 400; }
+.tspots button { padding: 8px 2px; white-space: nowrap; }
+.cap-title { cursor: grab; touch-action: none; pointer-events: auto; }
+.cap-title:active { cursor: grabbing; }
+@media (max-width: 820px) { .cap-side { position: static; } }

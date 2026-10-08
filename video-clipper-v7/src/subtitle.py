@@ -7,6 +7,11 @@
   color / outline_color … 文字色・縁取り色(#RRGGBB)
   outline / shadow      … 縁取りの太さ・影の強さ
   bold / box            … 太字・半透明の背景ボックス
+話題の見出しの見た目も同じ辞書に「t_」で始まる名前で持つ(テロップとは別に変えられる)。
+  t_font / t_size / t_color / t_bold … フォント・文字サイズ・文字色・太字
+  t_bg / t_bg_opacity   … 帯の色・濃さ(0.0〜1.0)
+  t_pos                 … 置く場所(TITLE_ALIGN のキー。左上・中央上・右上・左下・右下)
+  t_mx / t_my           … 画面の端からの余白(横・縦。PlayRes 384x288 基準)
 これらを ffmpeg subtitles フィルタの force_style(ASS)に変換して反映する。
 """
 import json
@@ -47,9 +52,24 @@ DEFAULT_STYLE = {
     "shadow": 0.0,
     "bold": False,
     "box": False,
+    # 話題の見出し
+    "t_font": "gothic",
+    "t_size": 11.0,
+    "t_color": "#FFFFFF",
+    "t_bold": False,
+    "t_bg": "#000000",
+    "t_bg_opacity": 0.75,
+    "t_pos": "tl",
+    "t_mx": 10.0, "t_my": 10.0,
 }
 
+# 見出しの置き場所 → ffmpeg が SRT から作る字幕の配置番号(旧 SSA 形式:1〜3 が下、5〜7 が上)
+TITLE_ALIGN = {"tl": 5, "tc": 6, "tr": 7, "bl": 1, "br": 3}
+
 _HEX_RE = re.compile(r"^#?[0-9a-fA-F]{6}$")
+# 見出しを別に設定できるようになる前は、テロップの文字サイズから見出しの大きさを決めていた
+TITLE_SIZE_RATIO = 0.62
+TITLE_SIZE_MIN, TITLE_SIZE_MAX = 11.0, 20.0
 
 
 def normalize_style(raw, base: dict = None) -> dict:
@@ -95,6 +115,27 @@ def normalize_style(raw, base: dict = None) -> dict:
             s[key] = raw[key]
     if isinstance(raw.get("preset"), str):
         s["preset"] = raw["preset"][:20]
+
+    # 話題の見出し
+    if raw and not any(str(k).startswith("t_") for k in raw) and not (base and "t_size" in base):
+        # 見出しを別に設定できるようになる前の設定:これまでどおりテロップから決める
+        s["t_font"] = s["font"]
+        s["t_size"] = round(min(s["size"], max(TITLE_SIZE_MIN, min(s["size"] * TITLE_SIZE_RATIO, TITLE_SIZE_MAX))), 1)
+    if raw.get("t_font") in FONT_MAP:
+        s["t_font"] = raw["t_font"]
+    for key, lo, hi in (("t_size", 6.0, 40.0), ("t_bg_opacity", 0.0, 1.0), ("t_mx", 0.0, 180.0), ("t_my", 0.0, 140.0)):
+        try:
+            s[key] = max(lo, min(float(raw[key]), hi))
+        except (KeyError, TypeError, ValueError):
+            pass
+    for key in ("t_color", "t_bg"):
+        v = str(raw.get(key, ""))
+        if _HEX_RE.match(v):
+            s[key] = "#" + v.lstrip("#").upper()
+    if isinstance(raw.get("t_bold"), bool):
+        s["t_bold"] = raw["t_bold"]
+    if raw.get("t_pos") in TITLE_ALIGN:
+        s["t_pos"] = raw["t_pos"]
     return s
 
 
@@ -144,29 +185,26 @@ def build_style(style: dict = None) -> str:
             f"Alignment=2,MarginV={margin_v},MarginL={margin_l},MarginR={margin_r}")
 
 
-# --- 話題の見出し(画面左上) ---
-TITLE_SIZE_RATIO = 0.62   # テロップの文字サイズに対する見出しの大きさ
-TITLE_SIZE_MIN, TITLE_SIZE_MAX = 11.0, 20.0
-TITLE_MARGIN = 10         # 画面の端からの余白(PlayRes 384x288 基準)
+# --- 話題の見出し ---
+TITLE_PAD = 3             # 帯の、文字のまわりの余白(PlayRes 基準)
 
 
 def build_title_style(style: dict = None) -> str:
-    """話題の見出し用の force_style を作る。
+    """話題の見出し用の force_style を作る(見た目は style の t_ で始まる値)。
 
-    テロップ本体と同じフォントで、少し小さく、左上に半透明の黒帯で置く。
     ffmpeg が SRT から作る字幕は旧SSA形式の配置指定なので、左上は Alignment=5
-    (7 は右上になる。実際に焼いて確認済み)。BorderStyle=3 が背景ボックス。
+    (7 は右上になる。実際に焼いて確認済み)。BorderStyle=3 が背景の帯。
     """
     s = normalize_style(style or {})
-    font_name = FONT_MAP.get(s["font"], "Meiryo")
-    # テロップより小さく。ただし読めない大きさにはしない
-    size = min(s["size"], max(TITLE_SIZE_MIN, min(s["size"] * TITLE_SIZE_RATIO, TITLE_SIZE_MAX)))
-    return (f"FontName={font_name},FontSize={size:g},Bold=0,"
-            f"PrimaryColour={_ass_color('#FFFFFF')},"
-            f"OutlineColour={_ass_color('#000000', 0x40)},"     # 半透明の黒帯
-            f"BackColour={_ass_color('#000000', 0x60)},"
-            f"BorderStyle=3,Outline=3,Shadow=0,"
-            f"Alignment=5,MarginV={TITLE_MARGIN},MarginL={TITLE_MARGIN},MarginR={TITLE_MARGIN}")
+    font_name = FONT_MAP.get(s["t_font"], "Meiryo")
+    alpha = round((1.0 - s["t_bg_opacity"]) * 255)
+    return (f"FontName={font_name},FontSize={s['t_size']:g},Bold={-1 if s['t_bold'] else 0},"
+            f"PrimaryColour={_ass_color(s['t_color'])},"
+            f"OutlineColour={_ass_color(s['t_bg'], alpha)},"     # 帯
+            f"BackColour={_ass_color('#000000', 0xFF)},"
+            f"BorderStyle=3,Outline={TITLE_PAD},Shadow=0,"
+            f"Alignment={TITLE_ALIGN[s['t_pos']]},MarginV={round(s['t_my'])},"
+            f"MarginL={round(s['t_mx'])},MarginR={round(s['t_mx'])}")
 
 
 def _fmt_time(sec: float) -> str:
