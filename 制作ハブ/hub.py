@@ -411,7 +411,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if not url.path.startswith('/api/'):
                 return self.send_json(404, {'error': 'not found'})
             if not secrets.compare_digest(self.headers.get('X-Token', ''), TOKEN):
-                return self.send_json(403, {'error': 'ハブを start_hub.bat から起動し直してください。'})
+                return self.send_json(403, {'error': 'ハブを「はじめる」から起動し直してください。'})
             LAST_SEEN[0] = time.time()
             if method == 'GET' and url.path == '/api/state':
                 return self.send_json(200, state())

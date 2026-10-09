@@ -202,7 +202,7 @@ async function api(path, body) {
       body: body === undefined ? undefined : JSON.stringify(body),
     });
   } catch {
-    if (++failures >= 2) showBanner('ハブが終了しています。start_hub.bat から起動し直してください。');
+    if (++failures >= 2) showBanner('ハブが終了しています。「はじめる」から起動し直してください。');
     throw new Error('ハブと接続できませんでした。');
   }
   failures = 0;
@@ -369,7 +369,7 @@ async function refresh() {
 }
 
 if (!TOKEN) {
-  document.body.replaceChildren(h('p', { style: 'padding:40px;text-align:center' }, '制作ハブは start_hub.bat から起動してください。'));
+  document.body.replaceChildren(h('p', { style: 'padding:40px;text-align:center' }, '制作ハブは「はじめる」から起動してください。'));
 } else {
   refresh();
   setInterval(refresh, 3000);
