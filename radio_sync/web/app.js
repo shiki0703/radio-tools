@@ -117,7 +117,7 @@ async function api(path, body) {
       body: body === undefined ? undefined : JSON.stringify(body),
     });
   } catch {
-    if (++failures >= 2) showBanner('ツールが終了しています。start_windows.bat から起動し直してください(作業内容は自動でバックアップされています)。');
+    if (++failures >= 2) showBanner('Radio Sync が終了しています。「はじめる」(制作ハブ)から開き直してください(作業内容は自動でバックアップされています)。');
     throw new Error('ツールと接続できませんでした。');
   }
   failures = 0;

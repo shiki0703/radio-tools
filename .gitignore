@@ -14,3 +14,6 @@ hub_instance.json
 instance.json
 settings.json
 launcher/collect_sources.json
+
+# 一式で共通の設定(制作ハブの画面で変える)
+common_settings.json

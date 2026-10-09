@@ -29,7 +29,11 @@ CONFIG = HERE / 'hub_config.json'
 INSTANCE = HERE / 'hub_instance.json'
 LOG = HERE / 'hub.log'
 PREFERRED_PORT = 8790
-IDLE_EXIT = 180
+# 画面から音沙汰がないと自動で終了する(既定 2 時間)。ウィンドウを裏に回すと
+# ブラウザが画面を止めて合図が途絶えるので、短すぎると使っている途中で終わってしまう
+COMMON = HERE.parent / 'common_settings.json'
+AUTO_EXIT_MINUTES = 120
+CLOSE_GRACE = 15         # 画面を閉じたあと、開き直されなければ終わるまでの秒数
 TOKEN = secrets.token_urlsafe(24)
 NO_WINDOW = 0x08000000 if os.name == 'nt' else 0
 VIDEO_EXT = {'.mp4', '.mov', '.m4v', '.mkv', '.avi', '.mts', '.m2ts', '.wmv'}
@@ -37,6 +41,7 @@ SKIP_DIRS = {'.git', '.venv', 'venv', '__pycache__', 'node_modules', 'results', 
 
 HOSTS = set()
 LAST_SEEN = [time.time()]
+CLOSED = [False]          # 画面が閉じられた合図を受けた
 BUSY = [0]  # requests that must keep the hub alive (e.g. waiting for a tool to start)
 LOG_STREAM = [sys.stderr]
 
@@ -205,7 +210,8 @@ def guides(config):
 def state():
     config = load_config()
     return {'radio_sync': radio_sync_status(config), 'clipper': clipper_status(config),
-            'exports': recent_exports(config), 'results': recent_results(config), 'guides': guides(config)}
+            'exports': recent_exports(config), 'results': recent_results(config), 'guides': guides(config),
+            'auto_exit_minutes': auto_exit_minutes()}
 
 
 # ---------- actions ----------
@@ -358,6 +364,36 @@ def set_tool_folder(body):
     return {'ok': True}
 
 
+AUTO_EXIT_CHOICES = (30, 60, 120, 0)   # 0 は「閉じるまで終了しない」
+
+
+def auto_exit_minutes():
+    try:
+        minutes = int(json.loads(COMMON.read_text(encoding='utf-8')).get('auto_exit_minutes', AUTO_EXIT_MINUTES))
+    except (OSError, ValueError, TypeError, AttributeError):
+        return AUTO_EXIT_MINUTES
+    return minutes if minutes in AUTO_EXIT_CHOICES else AUTO_EXIT_MINUTES
+
+
+def set_auto_exit(body):
+    """ツール(ハブ・Radio Sync・動画クリッパー)が自動で終わるまでの時間。各ツールはすぐに読み直す。"""
+    try:
+        minutes = int(body.get('minutes'))
+    except (TypeError, ValueError):
+        minutes = -1
+    if minutes not in AUTO_EXIT_CHOICES:
+        raise UserError('選べない時間です。')
+    try:
+        common = json.loads(COMMON.read_text(encoding='utf-8'))
+        if not isinstance(common, dict):
+            common = {}
+    except (OSError, ValueError):
+        common = {}
+    common['auto_exit_minutes'] = minutes
+    save_json(common, COMMON)
+    return {'ok': True}
+
+
 def open_path(body):
     """Open a folder, or show a file in Explorer. Only places the hub itself listed are allowed."""
     target = Path(str(body.get('path') or ''))
@@ -380,6 +416,7 @@ POST = {
     '/api/send': send_to_clipper,
     '/api/pick-send': pick_and_send,
     '/api/tool-folder': set_tool_folder,
+    '/api/auto-exit': set_auto_exit,
     '/api/open': open_path,
 }
 
@@ -406,13 +443,15 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if url.path in ('/', '/index.html') and method == 'GET':
                 return self.send_page()
             if url.path == '/api/bye' and secrets.compare_digest(urllib.parse.parse_qs(url.query).get('t', [''])[0], TOKEN):
-                LAST_SEEN[0] = time.time() - IDLE_EXIT + 15
+                LAST_SEEN[0] = time.time()
+                CLOSED[0] = True
                 return self.send_json(200, {'ok': True})
             if not url.path.startswith('/api/'):
                 return self.send_json(404, {'error': 'not found'})
             if not secrets.compare_digest(self.headers.get('X-Token', ''), TOKEN):
                 return self.send_json(403, {'error': 'ハブを「はじめる」から起動し直してください。'})
             LAST_SEEN[0] = time.time()
+            CLOSED[0] = False
             if method == 'GET' and url.path == '/api/state':
                 return self.send_json(200, state())
             if method == 'POST' and url.path in POST:
@@ -477,10 +516,24 @@ def running_hub():
         return None
 
 
+def idle_limit():
+    """画面から音沙汰がないまま待つ秒数。None なら、画面を閉じるまで終了しない。
+    一式で共通の設定(制作ハブの画面で変える)。閉じたあとは CLOSE_GRACE 秒で終わる。"""
+    if CLOSED[0]:
+        return CLOSE_GRACE
+    try:
+        minutes = json.loads(COMMON.read_text(encoding='utf-8')).get('auto_exit_minutes', AUTO_EXIT_MINUTES)
+        minutes = float(minutes)
+    except (OSError, ValueError, TypeError, AttributeError):
+        minutes = AUTO_EXIT_MINUTES
+    return None if minutes <= 0 else max(minutes * 60, 180)
+
+
 def watchdog(server):
     while True:
         time.sleep(5)
-        if not BUSY[0] and time.time() - LAST_SEEN[0] > IDLE_EXIT:
+        limit = idle_limit()
+        if not BUSY[0] and limit is not None and time.time() - LAST_SEEN[0] > limit:
             log('画面が閉じられたため終了します')
             server.shutdown()
             return

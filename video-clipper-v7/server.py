@@ -60,7 +60,11 @@ SECRETS = DATA / 'secrets.json'     # AI に使う API キー(この PC の中�
 INSTANCE = DATA / 'instance.json'
 LOG = DATA / 'server.log'
 PREFERRED_PORT = 8766
-IDLE_EXIT = 180
+# 画面から音沙汰がないと自動で終了する(既定 2 時間)。ウィンドウを裏に回すと
+# ブラウザが画面を止めて合図が途絶えるので、短すぎると使っている途中で終わってしまう
+COMMON = HERE.parent / 'common_settings.json'
+AUTO_EXIT_MINUTES = 120
+CLOSE_GRACE = 15         # 画面を閉じたあと、開き直されなければ終わるまでの秒数
 TOKEN = secrets.token_urlsafe(24)
 NO_WINDOW = 0x08000000 if os.name == 'nt' else 0
 VIDEO_EXT = {'.mp4', '.mov', '.m4v', '.mkv', '.avi', '.mts', '.m2ts', '.wmv', '.webm'}
@@ -81,6 +85,7 @@ UPLOADING = [0]          # 受け取り中のファイル数(この間は終了�
 HOSTS = set()
 ALLOWED = set()          # source videos the page may play
 LAST_SEEN = [time.time()]
+CLOSED = [False]          # 画面が閉じられた合図を受けた
 LAST_UI = [0.0]          # last time an open window checked in
 PENDING = {'path': ''}   # a video handed over by another tool, waiting for the window to pick it up
 LOCK = threading.Lock()
@@ -1297,7 +1302,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if url.path == '/api/pair' and method == 'POST':      # 合言葉は鍵なしで受ける
                 return self.send_json(200, pair(self.read_json()))
             if url.path == '/api/bye' and secrets.compare_digest(query.get('t', [''])[0], TOKEN):
-                LAST_SEEN[0] = time.time() - IDLE_EXIT + 15
+                LAST_SEEN[0] = time.time()
+                CLOSED[0] = True
                 LAST_UI[0] = 0.0
                 return self.send_json(200, {'ok': True})
             if url.path == '/media' and method == 'GET':
@@ -1306,6 +1312,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 if not secrets.compare_digest(self.headers.get('X-Token', ''), TOKEN):
                     return self.send_json(403, {'error': '画面が古くなっています。動画クリッパーを起動し直してください。'})
                 LAST_SEEN[0] = time.time()
+                CLOSED[0] = False
                 if method == 'GET' and url.path == '/api/hello':
                     return self.send_json(200, {'app': 'video-clipper', 'job': JOB['state'], 'percent': JOB['percent']})
                 if method == 'GET' and url.path == '/api/state':
@@ -1482,10 +1489,24 @@ def open_window(url):
     webbrowser.open(url)
 
 
+def idle_limit():
+    """画面から音沙汰がないまま待つ秒数。None なら、画面を閉じるまで終了しない。
+    一式で共通の設定(制作ハブの画面で変える)。閉じたあとは CLOSE_GRACE 秒で終わる。"""
+    if CLOSED[0]:
+        return CLOSE_GRACE
+    try:
+        minutes = json.loads(COMMON.read_text(encoding='utf-8')).get('auto_exit_minutes', AUTO_EXIT_MINUTES)
+        minutes = float(minutes)
+    except (OSError, ValueError, TypeError, AttributeError):
+        minutes = AUTO_EXIT_MINUTES
+    return None if minutes <= 0 else max(minutes * 60, 180)
+
+
 def watchdog(server):
     while True:
         time.sleep(5)
-        if JOB['state'] != 'running' and UPLOADING[0] == 0 and time.time() - LAST_SEEN[0] > IDLE_EXIT:
+        limit = idle_limit()
+        if JOB['state'] != 'running' and UPLOADING[0] == 0 and limit is not None and time.time() - LAST_SEEN[0] > limit:
             log('画面が閉じられたため終了します')
             server.shutdown()
             return

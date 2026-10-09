@@ -90,6 +90,8 @@
   .row-name { font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .row-sub { font-size: 12px; color: var(--muted); display: flex; gap: 12px; flex-wrap: wrap; font-variant-numeric: tabular-nums; }
   .empty { border: 1.5px dashed var(--line-strong); border-radius: 9px; padding: 18px; text-align: center; color: var(--muted); }
+  .setting-row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }
+  .setting-row label { font-weight: 700; }
   details.paths summary { cursor: pointer; font-weight: 700; }
   .path-row { display: grid; grid-template-columns: 130px minmax(0, 1fr) auto; gap: 10px; align-items: center; margin-top: 8px; }
   .path { font-family: Consolas, monospace; font-size: 12px; background: var(--panel-2); border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -153,6 +155,16 @@
   </section>
 
   <section class="card">
+    <div class="setting-row">
+      <label for="autoExit">ツールが自動で終わるまで</label>
+      <select id="autoExit">
+        <option value="30">30分</option>
+        <option value="60">1時間</option>
+        <option value="120">2時間</option>
+        <option value="0">閉じるまで終わらない</option>
+      </select>
+      <span class="small">画面を最小化・裏に回したままのとき。閉じたときは、すぐ終わります。</span>
+    </div>
     <details class="paths">
       <summary>ツールの場所</summary>
       <div id="paths"></div>
@@ -323,6 +335,8 @@ function render() {
         h('div', { class: 'actions' }, h('button', { onclick: () => run('open', () => api('/api/open', { path: r.path })) }, 'フォルダを開く')))))
     : h('div', { class: 'empty' }, 'まだありません。動画クリッパーで処理すると、ここに並びます。'));
 
+  if (document.activeElement !== $('autoExit')) $('autoExit').value = String(S.auto_exit_minutes);
+
   $('paths').replaceChildren(...[['radio_sync', 'Radio Sync'], ['clipper', '動画クリッパー']].map(([k, label]) =>
     h('div', { class: 'path-row' },
       h('b', {}, label),
@@ -374,6 +388,11 @@ if (!TOKEN) {
   refresh();
   setInterval(refresh, 3000);
   window.addEventListener('focus', refresh);
+  $('autoExit').addEventListener('change', (e) => run('auto-exit', async () => {
+    await api('/api/auto-exit', { minutes: Number(e.target.value) });
+    toast('自動で終わるまでの時間を変えました(動いているツールにも、すぐ効きます)');
+    e.target.blur();
+  }));
   window.addEventListener('pagehide', () => navigator.sendBeacon(`/api/bye?t=${encodeURIComponent(TOKEN)}`));
 }
 </script>

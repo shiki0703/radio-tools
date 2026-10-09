@@ -15,7 +15,7 @@ SKIP_DIRS = {'.venv', 'data', 'results', '__pycache__', '.git', '.claude', 'node
              '.pytest_cache', 'manual', 'manual-mac', 'tools', 'tests', 'uploads', 'proxy', 'runtime'}
 SKIP_SUFFIX = {'.pyc', '.pyo', '.log', '.part', '.tmp'}
 SKIP_NAMES = {'instance.json', 'hub_instance.json', 'autosave.json', 'exports.json', 'hub_config.json',
-              'settings.json', 'secrets.json', 'CLAUDE.md', 'settings.local.json', '.gitignore', '.gitattributes',
+              'settings.json', 'common_settings.json', 'secrets.json', 'CLAUDE.md', 'settings.local.json', '.gitignore', '.gitattributes',
               'result.json', 'collect.py', 'collect_sources.json'}
 
 

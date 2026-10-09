@@ -83,7 +83,7 @@ async function api(path, body) {
       body: body === undefined ? undefined : JSON.stringify(body),
     });
   } catch {
-    if (++failures >= 2) showBanner('動画クリッパーが終了しています。start_windows.bat から起動し直してください(処理結果は保存されています)。');
+    if (++failures >= 2) showBanner('動画クリッパーが終了しています。「はじめる」(制作ハブ)から開き直してください(処理結果は保存されています)。');
     throw new Error('動画クリッパーと接続できませんでした。');
   }
   failures = 0;

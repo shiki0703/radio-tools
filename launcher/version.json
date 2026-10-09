@@ -1,8 +1,8 @@
 {
-  "version": "2026.10.09.7",
+  "version": "2026.10.09.8",
   "released": "2026-10-09",
   "notes": [
-    "制作ハブを start_hub.bat から開いたときも、新しい版がないか確かめるようにしました"
+    "使っていないときにツールが終わるまでの時間を、制作ハブの一番下で選べるようにしました(既定は2時間。これまでは3分)"
   ],
   "check": "https://raw.githubusercontent.com/shiki0703/radio-tools/main/launcher/version.json",
   "download": "https://codeload.github.com/shiki0703/radio-tools/zip/refs/heads/main"
