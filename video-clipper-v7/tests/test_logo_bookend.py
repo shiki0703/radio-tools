@@ -105,16 +105,17 @@ class LogoTest(unittest.TestCase):
                   logo=self.logo)
         self.assertTrue(is_red(pixel(out / 'clip_1.mp4', 1, 512 + 32, 18 + 16)))
 
-    def test_vertical_clip_keeps_the_logo_inside_the_picture(self):
+    def test_vertical_clip_places_the_logo_on_the_whole_screen(self):
+        """縦の切り抜きでは、上下の黒い部分も含めた 9:16 の画面(1080x1920)に対する位置に置く"""
         out = self.root / 'v'
         out.mkdir()
         cut_clips(str(self.root / 'work.mp4'), [{'start': 1, 'end': 3}], str(out), orientation='vertical',
                   work_video=str(self.root / 'work.mp4'), segments=self.segments, style=dict(DEFAULT_STYLE), logo=self.logo)
-        # 640x360 → 1080x608 にして、1920 の高さの真ん中(上から 656)に置く。ロゴは 1.6875 倍
+        # x 0.8・y 0.05・幅 0.1 → 1080x1920 では (864, 96) から幅 108(高さ 54)。上の黒い部分に入る
+        self.assertTrue(is_red(pixel(out / 'clip_1.mp4', 1, 864 + 54, 96 + 27)))
+        # 映像(上から 656〜1264)の中の、前の置き方の場所には出ない
         k = 1080 / 640
-        x, y = round((512 + 32) * k), round(656 + (18 + 16) * k)
-        self.assertTrue(is_red(pixel(out / 'clip_1.mp4', 1, x, y)))
-        self.assertFalse(is_red(pixel(out / 'clip_1.mp4', 1, x, 20)))     # 上の黒帯には出ない
+        self.assertFalse(is_red(pixel(out / 'clip_1.mp4', 1, round((512 + 32) * k), round(656 + (18 + 16) * k))))
 
 
 def brightness(path, t):

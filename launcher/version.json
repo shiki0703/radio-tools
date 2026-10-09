@@ -1,10 +1,8 @@
 {
-  "version": "2026.10.09.5",
+  "version": "2026.10.09.6",
   "released": "2026-10-09",
   "notes": [
-    "動画クリッパー:縦の切り抜きでも、プレビューでロゴをドラッグできるようにしました(ロゴの表示位置のずれも直しました)",
-    "動画クリッパー:ロゴの位置に「中央上」を足し、テロップ・見出し・ロゴをもっと大きくできるようにしました",
-    "動画クリッパー:画面の説明文を短く、今の作りに合う内容に直しました"
+    "動画クリッパー:縦の切り抜きで、ロゴを上下の黒い部分にも置けるようにしました"
   ],
   "check": "https://raw.githubusercontent.com/shiki0703/radio-tools/main/launcher/version.json",
   "download": "https://codeload.github.com/shiki0703/radio-tools/zip/refs/heads/main"

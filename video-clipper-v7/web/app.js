@@ -549,16 +549,11 @@ function captionEditor(opts) {
   logoImg.addEventListener('load', () => update());
   const preview = h('div', { class: 'cap-preview' }, logoImg, tag, title, text);
   // ロゴ(元動画・切り抜き共通)。このプレビューの上で動かす
-  // ロゴを置く映像の範囲(プレビューに対する割合)。縦の切り抜きでは、中央に置いた映像の中
-  const logoFrame = () => {
-    if (!(target === 'clip' && opts.vertical())) return { top: 0, h: 1 };
-    // 映像は幅いっぱいに置かれ(src/clip.py の scale と pad)、高さは 9:16 の枠の 9 / (16 × 映像の横縦比)
-    const frac = Math.min(1, 9 / (16 * thumbRatio(opts.thumb(), update)));
-    return { top: (1 - frac) / 2, h: frac };
-  };
+  // ロゴを置く画面の横縦比。縦の切り抜きは、上下の黒い部分も含めた 9:16 の画面に置く(src/clip.py と同じ)
+  const logoRatio = () => (target === 'clip' && opts.vertical() ? 9 / 16 : thumbRatio(opts.thumb(), update));
   const logoCtl = opts.saveLogo ? logoPanel({
     get: () => opts.logo(target), save: (logo) => opts.saveLogo(target, logo), thumb: opts.thumb, img: logoImg, stage: preview,
-    frame: () => logoFrame(), onChange: () => update(),
+    ratio: logoRatio, onChange: () => update(),
   }) : null;
 
   text.addEventListener('pointerdown', (e) => {
@@ -700,11 +695,10 @@ function captionEditor(opts) {
         logoImg.dataset.src = logo.path;
         logoImg.src = mediaUrl(logo.path);
       }
-      const f = logoFrame();
       const s0 = logoImg.style;
       s0.left = `${logo.x * 100}%`;
       s0.width = `${logo.w * 100}%`;
-      s0.top = `${(f.top + logo.y * f.h) * 100}%`;
+      s0.top = `${logo.y * 100}%`;
     }
     logoImg.classList.toggle('grab', showLogo && !!logoCtl);
     logoInfo.textContent = showLogo ? `重ねる(大きさ ${Math.round(logo.w * 100)}%)` : '重ねない';
@@ -743,7 +737,7 @@ function logoHeight(logo, img, ratio) {
  * ロゴを選んで、ドラッグで動かし、スライダーで大きさを変える欄。
  * opts: get() -> ロゴの設定, save(ロゴの設定), thumb() -> 背景にする動画の1場面, onChange(), note
  *       img / stage を渡すと、そのプレビュー(テロップの見た目)の上のロゴを動かす(自分のプレビューは持たない)。
- *       frame() … ロゴを置く映像の範囲 {top, h}(プレビューに対する割合。縦の切り抜きでは中央の一部)
+ *       ratio() … ロゴを置く画面の横縦比(省略すると動画の横縦比。縦の切り抜きでは 9/16)
  */
 function logoPanel(opts) {
   const cur = () => ({ ...LOGO_DEFAULT, ...(opts.get() || {}) });
@@ -778,7 +772,7 @@ function logoPanel(opts) {
     h('div', { class: 'row' }, h('label', { class: 'check logo-on' }, onBox, 'ロゴを重ねる'), name, pickBtn, offBtn),
     body);
 
-  const ratio = () => thumbRatio(opts.thumb(), update);
+  const ratio = () => opts.ratio?.() || thumbRatio(opts.thumb(), update);
   function apply(change) {
     opts.save({ ...cur(), ...change });
     update();
@@ -788,12 +782,9 @@ function logoPanel(opts) {
     const r = await api('/api/pick', { kind: 'logo' });
     if (r.path) apply({ path: r.path, on: true });
   }
-  // 映像の範囲(frame。縦の切り抜きのプレビューでは中央の一部)に置く
-  const frame = () => opts.frame?.() || { top: 0, h: 1 };
   function place(l) {
-    const f = frame();
     img.style.left = `${l.x * 100}%`;
-    img.style.top = `${(f.top + l.y * f.h) * 100}%`;
+    img.style.top = `${l.y * 100}%`;
     img.style.width = `${l.w * 100}%`;
   }
 
@@ -811,7 +802,7 @@ function logoPanel(opts) {
     const hgt = logoHeight(l, img, ratio());
     drag.now = { ...l,
       x: clampTo(l.x + (ev.clientX - drag.sx) / drag.box.width, 0, 1 - l.w),
-      y: clampTo(l.y + (ev.clientY - drag.sy) / (drag.box.height * frame().h), 0, Math.max(0, 1 - hgt)) };
+      y: clampTo(l.y + (ev.clientY - drag.sy) / drag.box.height, 0, Math.max(0, 1 - hgt)) };
     place(drag.now);
   });
   const drop = () => {

@@ -35,8 +35,10 @@ def logo_box(logo: dict, width: int, height: int) -> tuple:
     return w, round(logo['x'] * width), round(logo['y'] * height)
 
 
-def overlay_graph(logo: dict, width: int, height: int, after=(), logo_input: str = '1:v') -> str:
-    """-filter_complex 用:元の映像([0:v])にロゴを重ね、続けて after のフィルタ(字幕など)をかけて [v] にする"""
+def overlay_graph(logo: dict, width: int, height: int, after=(), logo_input: str = '1:v', before=()) -> str:
+    """-filter_complex 用:元の映像([0:v])に before のフィルタ(縦の画面にする等)をかけてからロゴを重ね、
+    続けて after のフィルタ(字幕など)をかけて [v] にする。width・height はロゴを重ねる時点の大きさ"""
     w, x, y = logo_box(logo, width, height)
-    chain = f'[0:v][logo]overlay={x}:{y}' + ''.join(',' + f for f in after)
+    base = '[0:v]' + (','.join(before) + '[base];[base]' if before else '')
+    chain = f'{base}[logo]overlay={x}:{y}' + ''.join(',' + f for f in after)
     return f'[{logo_input}]scale={w}:-2,format=rgba[logo];{chain}[v]'

@@ -46,7 +46,7 @@ def cut_clips(captioned_video: str, highlights: list, out_dir: str,
     segments:        字幕データ。切り抜き用スタイルで焼き込む(Noneなら字幕なし)
     style:           切り抜き用のテロップ設定辞書(src.subtitle.DEFAULT_STYLE 参照)
     titles:          話題の見出し([{start,end,text}])。渡すと画面左上にも焼き込む
-    logo:            ロゴの設定(src.logo)。渡すと元の映像に重ねる(縦のときは、中央に置いた映像の中に入る)
+    logo:            ロゴの設定(src.logo)。渡すと重ねる(縦のときは、上下の黒い部分も含めた 9:16 の画面に対する位置)
     hq:              画質優先モード(高画質エンコード+高品質な縮小補間)
     on_progress:     進捗(0.0〜1.0)を受け取るコールバック
     """
@@ -70,11 +70,12 @@ def cut_clips(captioned_video: str, highlights: list, out_dir: str,
 
         tmp_srt = tmp_title_srt = None
         vf_parts = []
+        layout = []
         if orientation == "vertical":
             # 縦: 元動画を幅1080に合わせ、9:16キャンバスの中央へ配置(上下黒帯)
             scale_flags = ":flags=lanczos" if hq else ""   # 画質優先時は高品質な補間
-            vf_parts.append(f"scale={V_WIDTH}:-2{scale_flags},"
-                            f"pad={V_WIDTH}:{V_HEIGHT}:(ow-iw)/2:(oh-ih)/2:black")
+            layout.append(f"scale={V_WIDTH}:-2{scale_flags},"
+                          f"pad={V_WIDTH}:{V_HEIGHT}:(ow-iw)/2:(oh-ih)/2:black")
 
         if local:
             tmp_srt = str(Path(out_dir) / f"_clip_{i}.srt")
@@ -88,17 +89,18 @@ def cut_clips(captioned_video: str, highlights: list, out_dir: str,
             vf_parts.append(f"subtitles='{escape_srt_path(tmp_title_srt)}'"
                             f":force_style='{build_title_style(style)}'")
 
-        if vf_parts or logo:
+        if layout or vf_parts or logo:
             # 再エンコードして切り出し(縦レイアウト化・テロップ焼き込み・ロゴがある場合)
             src = work_video if (local or local_titles) else (work_video or captioned_video)
             audio = ["-c:a", "aac"] + (["-b:a", "192k"] if hq else [])
             if logo:
-                # ロゴは元の映像の位置に重ねてから、縦にしたり字幕を入れたりする
+                # ロゴは縦の画面にしたあと(横はそのままの映像)に重ね、字幕はロゴより上に出す
+                size = (V_WIDTH, V_HEIGHT) if layout else (logo_size["width"], logo_size["height"])
                 picture = ["-i", logo["path"], "-filter_complex",
-                           overlay_graph(logo, logo_size["width"], logo_size["height"], vf_parts),
+                           overlay_graph(logo, *size, vf_parts, before=layout),
                            "-map", "[v]", "-map", "0:a?"]
             else:
-                picture = ["-vf", ",".join(vf_parts)]
+                picture = ["-vf", ",".join(layout + vf_parts)]
             cmd = ["ffmpeg", "-y",
                    "-ss", str(h["start"]), "-to", str(h["end"]),
                    "-i", src,
